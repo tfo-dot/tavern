@@ -1,7 +1,11 @@
 use engine::character::{Character, CharacterCardV1, CharacterCardV2, CharacterData, UserPersona};
 use engine::chat::{AuthorRole, ChatTree};
+use engine::lorebook::{
+    parse_lorebook, scan_lorebooks_for_activation, Lorebook, LorebookEntry, LorebookPosition,
+    SelectiveLogic,
+};
 use engine::parser::{export_character_json, export_character_png, parse_character_card};
-use engine::prompt::{build_chat_prompt, estimate_tokens, PromptConfig};
+use engine::prompt::{build_chat_prompt, build_chat_prompt_with_lorebooks, estimate_tokens, PromptConfig};
 use engine::template::interpolate_macros;
 
 #[test]
@@ -168,4 +172,99 @@ fn test_context_token_budgeting() {
     // Total tokens of all prompt messages should be constrained
     let total_tokens: usize = prompt_messages.iter().map(|m| estimate_tokens(&m.content)).sum();
     assert!(total_tokens <= 350);
+}
+
+#[test]
+fn test_lorebook_full_pipeline_activation_and_budgeting() {
+    let mut char_data = CharacterData::default();
+    char_data.name = "Lyra".to_string();
+    char_data.description = "A celestial astronomer.".to_string();
+    char_data.personality = "Quiet, insightful.".to_string();
+    char_data.scenario = "Observing the lunar eclipse.".to_string();
+
+    let user = UserPersona {
+        id: "u1".to_string(),
+        name: "Observer".to_string(),
+        description: "An apprentice.".to_string(),
+        avatar_data_url: None,
+    };
+
+    let mut tree = ChatTree::new("lyra".to_string(), "Eclipse".to_string());
+    let m1 = tree.append_message(AuthorRole::Assistant, "The eclipse begins tonight.".to_string(), None);
+    let m2 = tree.append_message(AuthorRole::User, "Do you have the telescope and obsidian lens ready?".to_string(), Some(m1));
+    tree.append_message(AuthorRole::Assistant, "Yes, mounted on the north tower.".to_string(), Some(m2));
+
+    // Create Lorebook
+    let mut lorebook = Lorebook::new("Celestial Lore".to_string(), "Astronomy world info".to_string());
+    lorebook.scan_depth = 3;
+    lorebook.token_budget = 500;
+
+    // Entry 1: Primary match
+    lorebook.add_entry(LorebookEntry {
+        keys: vec!["telescope".to_string()],
+        content: "The Great Telescope of Aethelgard was forged from starmetal.".to_string(),
+        comment: "Great Telescope".to_string(),
+        position: LorebookPosition::BeforeChar,
+        order: 10,
+        ..Default::default()
+    });
+
+    // Entry 2: Selective match (requires "lens" AND "obsidian")
+    lorebook.add_entry(LorebookEntry {
+        keys: vec!["lens".to_string()],
+        secondary_keys: vec!["obsidian".to_string()],
+        selective: true,
+        selective_logic: SelectiveLogic::AndAll,
+        content: "The Obsidian Lens filters out corrupted void light.".to_string(),
+        comment: "Obsidian Lens".to_string(),
+        position: LorebookPosition::AfterChar,
+        order: 20,
+        ..Default::default()
+    });
+
+    // Entry 3: Unmatched entry
+    lorebook.add_entry(LorebookEntry {
+        keys: vec!["supernova".to_string()],
+        content: "Supernovas occur when elder stars collapse.".to_string(),
+        comment: "Supernova".to_string(),
+        position: LorebookPosition::TopSystem,
+        ..Default::default()
+    });
+
+    // Entry 4: Constant entry
+    lorebook.add_entry(LorebookEntry {
+        constant: true,
+        content: "The astral calendar has twelve moon cycles.".to_string(),
+        comment: "Astral Calendar".to_string(),
+        position: LorebookPosition::TopSystem,
+        order: 5,
+        ..Default::default()
+    });
+
+    // Entry 5: AtDepth entry
+    lorebook.add_entry(LorebookEntry {
+        keys: vec!["tower".to_string()],
+        content: "[System note: The north tower is exposed to high celestial winds.]".to_string(),
+        comment: "North Tower Condition".to_string(),
+        position: LorebookPosition::AtDepth,
+        depth: 1,
+        order: 30,
+        ..Default::default()
+    });
+
+    let config = PromptConfig::default();
+    let prompt_msgs = build_chat_prompt_with_lorebooks(&char_data, &user, &tree, &config, &[&lorebook]);
+
+    // Top system entry should appear at the very start
+    assert!(prompt_msgs[0].content.contains("The astral calendar has twelve moon cycles."));
+    // BeforeChar entry should appear before character description
+    assert!(prompt_msgs[0].content.contains("Great Telescope of Aethelgard"));
+    // AfterChar entry should appear
+    assert!(prompt_msgs[0].content.contains("The Obsidian Lens filters out corrupted void light."));
+    // Unmatched entry should NOT be present
+    assert!(!prompt_msgs[0].content.contains("Supernovas occur when elder stars collapse."));
+
+    // AtDepth entry should be injected in the history
+    let at_depth_found = prompt_msgs.iter().any(|m| m.content.contains("high celestial winds"));
+    assert!(at_depth_found, "At-depth entry must be injected into chat history messages");
 }

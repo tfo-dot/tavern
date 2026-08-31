@@ -498,19 +498,24 @@
     font-weight: 600;
     text-shadow: 0 0 1px rgba(255, 224, 102, 0.4);
   }
+  .rendered-text :global(center) {
+    text-align: center;
+    margin: 0.5rem 0;
+  }
+
   .rendered-text :global(img) {
     max-width: 100%;
     max-height: 480px;
     height: auto;
     border-radius: 10px;
-    margin: 0.6rem 0;
+    margin: 0.6rem auto;
     cursor: pointer;
     object-fit: contain;
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
-    display: block;
+    display: inline-block;
+    vertical-align: middle;
     transition: filter 0.15s ease, transform 0.15s ease;
   }
-
   .rendered-text :global(img:hover) {
     filter: brightness(1.05);
     transform: scale(1.01);

@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use engine::character::{Character, CharacterCardV2, UserPersona};
 use engine::chat::ChatTree;
+use engine::lorebook::{parse_lorebook, Lorebook};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +24,8 @@ pub struct AppSettings {
     pub active_chat_id: Option<String>,
     #[serde(default)]
     pub active_persona_id: Option<String>,
+    #[serde(default)]
+    pub global_lorebook_ids: Vec<String>,
 }
 
 impl Default for AppSettings {
@@ -42,6 +45,7 @@ impl Default for AppSettings {
             active_character_id: None,
             active_chat_id: None,
             active_persona_id: None,
+            global_lorebook_ids: Vec::new(),
         }
     }
 }
@@ -82,6 +86,10 @@ impl StorageManager {
         self.base_dir.join("personas")
     }
 
+    fn lorebooks_dir(&self) -> PathBuf {
+        self.base_dir.join("lorebooks")
+    }
+
     fn settings_path(&self) -> PathBuf {
         self.base_dir.join("settings.json")
     }
@@ -94,6 +102,7 @@ impl StorageManager {
         let _ = fs::create_dir_all(self.characters_dir());
         let _ = fs::create_dir_all(self.chats_dir());
         let _ = fs::create_dir_all(self.personas_dir());
+        let _ = fs::create_dir_all(self.lorebooks_dir());
     }
 
     fn ensure_starter_data(&self) {
@@ -319,5 +328,58 @@ impl StorageManager {
             fs::remove_file(path).map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+
+    // --- Lorebooks (World Info) ---
+
+    pub fn save_lorebook(&self, lorebook: &Lorebook) -> Result<(), String> {
+        let path = self.lorebooks_dir().join(format!("{}.json", lorebook.id));
+        let data = serde_json::to_string_pretty(lorebook).map_err(|e| e.to_string())?;
+        fs::write(path, data).map_err(|e| e.to_string())
+    }
+
+    pub fn load_lorebook(&self, id: &str) -> Result<Lorebook, String> {
+        let path = self.lorebooks_dir().join(format!("{id}.json"));
+        let mut file = File::open(path).map_err(|e| e.to_string())?;
+        let mut content = String::new();
+        file.read_to_string(&mut content).map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).map_err(|e| e.to_string())
+    }
+
+    pub fn list_lorebooks(&self) -> Result<Vec<Lorebook>, String> {
+        let mut lorebooks = Vec::new();
+        if let Ok(entries) = fs::read_dir(self.lorebooks_dir()) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        if let Ok(book) = serde_json::from_str::<Lorebook>(&content) {
+                            lorebooks.push(book);
+                        }
+                    }
+                }
+            }
+        }
+        lorebooks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        Ok(lorebooks)
+    }
+
+    pub fn delete_lorebook(&self, id: &str) -> Result<(), String> {
+        let path = self.lorebooks_dir().join(format!("{id}.json"));
+        if path.exists() {
+            fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub fn import_lorebook(&self, file_bytes: &[u8]) -> Result<Lorebook, String> {
+        let book = parse_lorebook(file_bytes).map_err(|e| e.to_string())?;
+        self.save_lorebook(&book)?;
+        Ok(book)
+    }
+
+    pub fn export_lorebook_json(&self, id: &str) -> Result<String, String> {
+        let book = self.load_lorebook(id)?;
+        serde_json::to_string_pretty(&book).map_err(|e| e.to_string())
     }
 }

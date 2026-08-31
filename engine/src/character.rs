@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-
+use crate::lorebook::CharacterBook;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CharacterCardV2 {
     pub spec: String,         // "chara_card_v2"
@@ -47,6 +47,10 @@ pub struct CharacterData {
     pub creator: String,
     #[serde(default)]
     pub character_version: String,
+    #[serde(default)]
+    pub character_book: Option<CharacterBook>,
+    #[serde(default)]
+    pub lorebook_ids: Vec<String>,
     #[serde(default)]
     pub extensions: serde_json::Value,
 }

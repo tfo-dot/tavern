@@ -7,8 +7,8 @@ import type {
   AppSettings,
   UserPersona,
   AuthorRole,
+  Lorebook,
 } from './types';
-
 // Character APIs
 export async function getAllCharacters(): Promise<Character[]> {
   return await invoke<Character[]>('get_all_characters');
@@ -144,4 +144,30 @@ export async function generateReply(isSwipe = false): Promise<void> {
 
 export async function abortGeneration(): Promise<void> {
   await invoke('abort_generation');
+}
+
+// Lorebook APIs
+export async function getAllLorebooks(): Promise<Lorebook[]> {
+  return await invoke<Lorebook[]>('get_all_lorebooks');
+}
+
+export async function getLorebook(id: string): Promise<Lorebook> {
+  return await invoke<Lorebook>('get_lorebook', { id });
+}
+
+export async function saveLorebook(lorebook: Lorebook): Promise<Lorebook> {
+  return await invoke<Lorebook>('save_lorebook', { lorebook });
+}
+
+export async function deleteLorebook(id: string): Promise<void> {
+  await invoke('delete_lorebook', { id });
+}
+
+export async function importLorebook(fileBytes: number[] | Uint8Array): Promise<Lorebook> {
+  const bytesArray = Array.from(fileBytes);
+  return await invoke<Lorebook>('import_lorebook', { fileBytes: bytesArray });
+}
+
+export async function exportLorebookJson(id: string): Promise<string> {
+  return await invoke<string>('export_lorebook_json', { id });
 }

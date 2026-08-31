@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use crate::character::{CharacterData, UserPersona};
 use crate::chat::{AuthorRole, ChatTree};
+use crate::lorebook::{scan_lorebooks_for_activation, ActivatedEntry, Lorebook, LorebookPosition};
 use crate::template::interpolate_macros;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,17 +35,80 @@ pub fn estimate_tokens(text: &str) -> usize {
     (char_count + 3) / 4
 }
 
-/// Assembles OpenAI-compatible messages for the chat completion endpoint
+/// Assembles OpenAI-compatible messages for the chat completion endpoint (without lorebooks)
 pub fn build_chat_prompt(
     char_data: &CharacterData,
     user: &UserPersona,
     chat_tree: &ChatTree,
     config: &PromptConfig,
 ) -> Vec<ChatMessage> {
+    build_chat_prompt_with_lorebooks(char_data, user, chat_tree, config, &[])
+}
+
+/// Assembles OpenAI-compatible messages with SillyTavern-compatible lorebook activation
+pub fn build_chat_prompt_with_lorebooks(
+    char_data: &CharacterData,
+    user: &UserPersona,
+    chat_tree: &ChatTree,
+    config: &PromptConfig,
+    lorebooks: &[&Lorebook],
+) -> Vec<ChatMessage> {
     let char_name = if char_data.name.is_empty() { "Character" } else { &char_data.name };
     let user_name = if user.name.is_empty() { "User" } else { &user.name };
 
+    // 0. Extract active chat message texts for lorebook scanning
+    let active_path = chat_tree.get_active_path();
+    let chat_texts: Vec<String> = active_path.iter().map(|n| n.content.clone()).collect();
+    let activated_entries = scan_lorebooks_for_activation(lorebooks, &chat_texts, "");
+
+    // Helper to format/interpolate a group of lorebook entries
+    let interpolate_entry_group = |entries: &[&ActivatedEntry]| -> String {
+        entries
+            .iter()
+            .map(|e| {
+                interpolate_macros(
+                    &e.content,
+                    char_name,
+                    user_name,
+                    &char_data.description,
+                    &char_data.personality,
+                    &char_data.scenario,
+                    &user.description,
+                )
+            })
+            .filter(|s| !s.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    };
+
+    // Categorize activated entries by position
+    let mut top_system = Vec::new();
+    let mut before_char = Vec::new();
+    let mut after_char = Vec::new();
+    let mut before_scenario = Vec::new();
+    let mut after_scenario = Vec::new();
+    let mut bottom_system = Vec::new();
+    let mut at_depth_entries = Vec::new();
+
+    for entry in &activated_entries {
+        match entry.position {
+            LorebookPosition::TopSystem => top_system.push(entry),
+            LorebookPosition::BeforeChar => before_char.push(entry),
+            LorebookPosition::AfterChar => after_char.push(entry),
+            LorebookPosition::BeforeScenario => before_scenario.push(entry),
+            LorebookPosition::AfterScenario => after_scenario.push(entry),
+            LorebookPosition::BottomSystem => bottom_system.push(entry),
+            LorebookPosition::AtDepth => at_depth_entries.push(entry),
+        }
+    }
+
     let mut system_parts = Vec::new();
+
+    // Top system lorebook entries
+    let top_sys_text = interpolate_entry_group(&top_system);
+    if !top_sys_text.is_empty() {
+        system_parts.push(top_sys_text);
+    }
 
     // 1. Base instructions from system template
     if !config.system_template.is_empty() {
@@ -74,6 +138,12 @@ pub fn build_chat_prompt(
         system_parts.push(char_sys);
     }
 
+    // Before character lorebook entries
+    let before_char_text = interpolate_entry_group(&before_char);
+    if !before_char_text.is_empty() {
+        system_parts.push(before_char_text);
+    }
+
     // 3. Character description & personality
     if !char_data.description.is_empty() {
         let desc = interpolate_macros(
@@ -101,6 +171,18 @@ pub fn build_chat_prompt(
         system_parts.push(format!("[Character Personality for {char_name}]\n{pers}"));
     }
 
+    // After character lorebook entries
+    let after_char_text = interpolate_entry_group(&after_char);
+    if !after_char_text.is_empty() {
+        system_parts.push(after_char_text);
+    }
+
+    // Before scenario lorebook entries
+    let before_scn_text = interpolate_entry_group(&before_scenario);
+    if !before_scn_text.is_empty() {
+        system_parts.push(before_scn_text);
+    }
+
     // 4. Scenario
     if !char_data.scenario.is_empty() {
         let scn = interpolate_macros(
@@ -115,6 +197,12 @@ pub fn build_chat_prompt(
         system_parts.push(format!("[Current Scenario]\n{scn}"));
     }
 
+    // After scenario lorebook entries
+    let after_scn_text = interpolate_entry_group(&after_scenario);
+    if !after_scn_text.is_empty() {
+        system_parts.push(after_scn_text);
+    }
+
     // 5. User persona
     if !user.description.is_empty() {
         let udesc = interpolate_macros(
@@ -127,6 +215,12 @@ pub fn build_chat_prompt(
             &user.description,
         );
         system_parts.push(format!("[User Persona for {user_name}]\n{udesc}"));
+    }
+
+    // Bottom system lorebook entries
+    let bottom_sys_text = interpolate_entry_group(&bottom_system);
+    if !bottom_sys_text.is_empty() {
+        system_parts.push(bottom_sys_text);
     }
 
     let full_system_content = system_parts.join("\n\n");
@@ -157,7 +251,6 @@ pub fn build_chat_prompt(
     }
 
     // 7. Active Chat History
-    let active_path = chat_tree.get_active_path();
     let mut history_messages = Vec::new();
 
     for node in active_path {
@@ -178,6 +271,34 @@ pub fn build_chat_prompt(
         );
 
         history_messages.push(ChatMessage { role, content });
+    }
+
+    // Insert at_depth lorebook entries into history messages
+    if !at_depth_entries.is_empty() {
+        // Group at_depth entries by target index in history
+        // Sort at_depth entries by depth descending so higher depth insertions don't disrupt lower ones
+        let mut sorted_depth_entries = at_depth_entries.clone();
+        sorted_depth_entries.sort_by(|a, b| b.depth.cmp(&a.depth).then_with(|| a.order.cmp(&b.order)));
+
+        for entry in sorted_depth_entries {
+            let insert_idx = history_messages.len().saturating_sub(entry.depth);
+            let content = interpolate_macros(
+                &entry.content,
+                char_name,
+                user_name,
+                &char_data.description,
+                &char_data.personality,
+                &char_data.scenario,
+                &user.description,
+            );
+            history_messages.insert(
+                insert_idx,
+                ChatMessage {
+                    role: "system".to_string(),
+                    content,
+                },
+            );
+        }
     }
 
     // 8. Post-history instructions if present

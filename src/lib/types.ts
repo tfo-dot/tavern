@@ -12,6 +12,8 @@ export interface CharacterData {
   tags?: string[];
   creator?: string;
   character_version?: string;
+  character_book?: CharacterBook | null;
+  lorebook_ids?: string[];
   extensions?: Record<string, unknown>;
 }
 
@@ -79,11 +81,66 @@ export interface AppSettings {
   active_character_id: string | null;
   active_chat_id: string | null;
   active_persona_id?: string | null;
+  global_lorebook_ids?: string[];
 }
-
 export interface UserPersona {
   id: string;
   name: string;
   description: string;
   avatar_data_url: string | null;
+}
+
+export type LorebookPosition =
+  | 'before_char'
+  | 'after_char'
+  | 'before_scenario'
+  | 'after_scenario'
+  | 'top_system'
+  | 'bottom_system'
+  | 'at_depth';
+
+export type SelectiveLogic = 0 | 1 | 2 | 3;
+
+export interface LorebookEntry {
+  id: string;
+  keys: string[];
+  secondary_keys: string[];
+  content: string;
+  comment: string;
+  enabled: boolean;
+  constant: boolean;
+  selective: boolean;
+  selective_logic: SelectiveLogic;
+  position: LorebookPosition;
+  depth: number;
+  order: number;
+  case_sensitive: boolean;
+  use_regex: boolean;
+  prevent_recursion: boolean;
+  scan_depth?: number | null;
+  extensions?: Record<string, unknown>;
+}
+
+export interface CharacterBook {
+  name?: string | null;
+  description?: string | null;
+  scan_depth?: number | null;
+  token_budget?: number | null;
+  recursive_scanning?: boolean | null;
+  entries: LorebookEntry[];
+  extensions?: Record<string, unknown>;
+}
+
+export interface Lorebook {
+  id: string;
+  name: string;
+  description: string;
+  scan_depth: number;
+  token_budget: number;
+  recursive_scanning: boolean;
+  global: boolean;
+  entries: LorebookEntry[];
+  created_at: string;
+  updated_at: string;
+  extensions?: Record<string, unknown>;
 }

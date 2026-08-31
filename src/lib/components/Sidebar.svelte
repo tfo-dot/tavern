@@ -14,8 +14,8 @@
   export let onNewChat: (characterId: string) => void;
   export let onDeleteChat: (id: string) => void;
   export let onDeleteCharacter: (id: string) => void;
+  export let onOpenLorebooks: (() => void) | undefined = undefined;
   export let onClose: () => void;
-
   let activeTab: 'characters' | 'chats' = 'characters';
   let searchQuery = '';
   let fileInputEl: HTMLInputElement;
@@ -246,6 +246,21 @@
           {/each}
         {/if}
       </div>
+    </div>
+  {/if}
+
+  {#if onOpenLorebooks}
+    <div class="sidebar-footer">
+      <button
+        class="lorebook-sidebar-btn"
+        on:click={() => {
+          if (onOpenLorebooks) onOpenLorebooks();
+          if (window.innerWidth <= 768) onClose();
+        }}
+      >
+        <span class="footer-btn-icon">📖</span>
+        <span class="footer-btn-text">World Info & Lorebooks</span>
+      </button>
     </div>
   {/if}
 </aside>
@@ -675,5 +690,36 @@
       margin-left: 0;
       pointer-events: none;
     }
+  }
+
+  .sidebar-footer {
+    padding: 0.8rem 1rem;
+    border-top: 1px solid #313244;
+    background: #11111b;
+  }
+
+  .lorebook-sidebar-btn {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    background: #1e1e2e;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    color: #cdd6f4;
+    padding: 0.55rem 0.8rem;
+    font-size: 0.82rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .lorebook-sidebar-btn:hover {
+    background: #313244;
+    border-color: #89b4fa;
+    color: #89b4fa;
+  }
+  .footer-btn-icon {
+    font-size: 1rem;
   }
 </style>

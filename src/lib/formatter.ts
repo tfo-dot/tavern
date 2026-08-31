@@ -51,12 +51,27 @@ export function formatMessageContent(
   if (!rawText) return '';
 
   // 1. Interpolate macros first
-  const interpolated = interpolateMacros(rawText, charName, userName);
+  let text = interpolateMacros(rawText, charName, userName);
 
-  // 2. Parse Markdown
-  let html = marked.parse(interpolated) as string;
+  // 2. Pre-process markdown images
+  // Markdown parsers (like marked) treat raw HTML blocks (<center>...</center>, <div>...</div>)
+  // as raw HTML and do not parse nested markdown images like `![alt](url)`.
+  // Converting them to <img> tags beforehand ensures they are properly rendered.
+  text = text.replace(
+      /!\[([^\]]*)\]\(([^)]+)\)/g,
+      '<img src="$2" alt="$1" loading="lazy" />',
+  );
 
-  // 3. Enhance dialogue quotes into high-contrast speech spans
+  // 3. Parse Markdown
+  let html = marked.parse(text) as string;
+
+  // Post-process in case any escaped markdown image syntax remains
+  html = html.replace(
+      /!\[([^\]]*)\]\(([^)]+)\)/g,
+      '<img src="$2" alt="$1" loading="lazy" />',
+  );
+
+  // 4. Enhance dialogue quotes into high-contrast speech spans
   // In marked output, text quotes are escaped as &quot;...&quot; or curly quotes
   html = html.replace(
       /&quot;([^<>\n]+?)&quot;/g,
@@ -79,13 +94,13 @@ export function formatMessageContent(
       '<span class="rp-speech">«$1»</span>',
   );
 
-  // 4. Convert <em> tags (from *action*) to rp-action without literal asterisks
+  // 5. Convert <em> tags (from *action*) to rp-action without literal asterisks
   html = html.replace(
       /<em>(.*?)<\/em>/gs,
       '<span class="rp-action">$1</span>',
   );
 
-  // 5. Sanitize final HTML to prevent XSS while allowing rich elements and images
+  // 6. Sanitize final HTML to prevent XSS while allowing rich elements and images
   return DOMPurify.sanitize(html, {
     ADD_TAGS: [
       'span',
@@ -118,6 +133,20 @@ export function formatMessageContent(
       'div',
       'strong',
       'em',
+      'b',
+      'i',
+      'u',
+      's',
+      'strike',
+      'sub',
+      'sup',
+      'center',
+      'font',
+      'figure',
+      'figcaption',
+      'video',
+      'audio',
+      'source',
     ],
     ADD_ATTR: [
       'class',
@@ -132,6 +161,17 @@ export function formatMessageContent(
       'target',
       'rel',
       'href',
+      'color',
+      'size',
+      'face',
+      'align',
+      'valign',
+      'bgcolor',
+      'controls',
+      'autoplay',
+      'loop',
+      'muted',
+      'poster',
     ],
   });
 }

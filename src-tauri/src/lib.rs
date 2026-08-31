@@ -6,9 +6,9 @@ use uuid::Uuid;
 use engine::character::{Character, UserPersona};
 use engine::chat::{AuthorRole, ChatTree, MessageViewNode};
 use engine::llm::{fetch_models, stream_chat_completion, GenerationParams};
+use engine::lorebook::Lorebook;
 use engine::parser::{export_character_json, export_character_png, parse_character_card};
-use engine::prompt::{build_chat_prompt, PromptConfig};
-
+use engine::prompt::{build_chat_prompt_with_lorebooks, PromptConfig};
 use tauri::{Emitter, Manager, State, Window};
 
 pub mod storage;
@@ -358,6 +358,56 @@ async fn set_active_user_persona(
     }
     Ok(found)
 }
+
+// --- Lorebook Commands ---
+
+#[tauri::command]
+async fn get_all_lorebooks(state: State<'_, Arc<AppState>>) -> Result<Vec<Lorebook>, String> {
+    state.storage.list_lorebooks()
+}
+
+#[tauri::command]
+async fn get_lorebook(id: String, state: State<'_, Arc<AppState>>) -> Result<Lorebook, String> {
+    state.storage.load_lorebook(&id)
+}
+
+#[tauri::command]
+async fn save_lorebook(
+    lorebook: Lorebook,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Lorebook, String> {
+    state.storage.save_lorebook(&lorebook)?;
+    Ok(lorebook)
+}
+
+#[tauri::command]
+async fn delete_lorebook(id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.storage.delete_lorebook(&id)?;
+    // Also remove from global_lorebook_ids if present
+    let mut settings = state.settings.lock().await;
+    if settings.global_lorebook_ids.contains(&id) {
+        settings.global_lorebook_ids.retain(|item| item != &id);
+        let _ = state.storage.save_settings(&settings);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn import_lorebook(
+    file_bytes: Vec<u8>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Lorebook, String> {
+    state.storage.import_lorebook(&file_bytes)
+}
+
+#[tauri::command]
+async fn export_lorebook_json(
+    id: String,
+    state: State<'_, Arc<AppState>>,
+) -> Result<String, String> {
+    state.storage.export_lorebook_json(&id)
+}
+
 #[tauri::command]
 async fn fetch_endpoint_models(
     endpoint: String,
@@ -365,7 +415,6 @@ async fn fetch_endpoint_models(
 ) -> Result<Vec<String>, String> {
     fetch_models(&endpoint, &api_key).await
 }
-
 // --- Generation & Streaming Commands ---
 
 #[tauri::command]
@@ -398,9 +447,43 @@ async fn generate_reply(
         include_examples: true,
     };
 
-    // 2. Build OpenAI-compatible chat prompt
-    let prompt_messages = build_chat_prompt(&character.card.data, &user, &chat_tree, &prompt_config);
+    // 2. Gather active lorebooks (embedded character book, character linked books, global books)
+    let mut active_lorebooks = Vec::new();
+    let embedded_book = character.card.data.character_book.as_ref().map(|cb| cb.to_lorebook());
+    if let Some(book) = &embedded_book {
+        active_lorebooks.push(book);
+    }
 
+    let mut char_linked_books = Vec::new();
+    for lb_id in &character.card.data.lorebook_ids {
+        if let Ok(book) = state.storage.load_lorebook(lb_id) {
+            char_linked_books.push(book);
+        }
+    }
+    for book in &char_linked_books {
+        active_lorebooks.push(book);
+    }
+
+    let mut global_books = Vec::new();
+    for lb_id in &settings.global_lorebook_ids {
+        if !character.card.data.lorebook_ids.contains(lb_id) {
+            if let Ok(book) = state.storage.load_lorebook(lb_id) {
+                global_books.push(book);
+            }
+        }
+    }
+    for book in &global_books {
+        active_lorebooks.push(book);
+    }
+
+    // Build OpenAI-compatible chat prompt with lorebooks
+    let prompt_messages = build_chat_prompt_with_lorebooks(
+        &character.card.data,
+        &user,
+        &chat_tree,
+        &prompt_config,
+        &active_lorebooks,
+    );
     let gen_params = GenerationParams {
         temperature: settings.temperature,
         top_p: settings.top_p,
@@ -554,6 +637,12 @@ pub fn run() {
             fetch_endpoint_models,
             generate_reply,
             abort_generation,
+            get_all_lorebooks,
+            get_lorebook,
+            save_lorebook,
+            delete_lorebook,
+            import_lorebook,
+            export_lorebook_json,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

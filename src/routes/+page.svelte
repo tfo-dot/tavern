@@ -40,7 +40,7 @@
   import CharacterEditorModal from '$lib/components/CharacterEditorModal.svelte';
   import CreatorNotesModal from '$lib/components/CreatorNotesModal.svelte';
   import ImagePreviewModal from '$lib/components/ImagePreviewModal.svelte';
-  // --- State ---
+  import LorebookModal from '$lib/components/LorebookModal.svelte';
   let characters: Character[] = [];
   let activeCharacter: Character | null = null;
   let chats: ChatSummary[] = [];
@@ -59,6 +59,7 @@
   let isCharEditorOpen = false;
   let isCreatorNotesOpen = false;
   let isImagePreviewOpen = false;
+  let isLorebookOpen = false;
   let previewImageSrc: string | null = null;
   let previewImageAlt: string = '';
   let editingCharacter: Character | null = null;
@@ -327,6 +328,7 @@
     onNewChat={handleNewChat}
     onDeleteChat={handleDeleteChat}
     onDeleteCharacter={handleDeleteCharacter}
+    onOpenLorebooks={() => (isLorebookOpen = true)}
     onClose={() => (isSidebarOpen = false)}
   />
 
@@ -388,6 +390,14 @@
             <span class="btn-text">Notes</span>
           </button>
         {/if}
+        <button
+          class="icon-nav-btn action-btn-compact lorebook-nav-btn"
+          on:click={() => (isLorebookOpen = true)}
+          title="World Info & Lorebooks"
+        >
+          <span class="btn-icon">📖</span>
+          <span class="btn-text">Lorebooks</span>
+        </button>
 
         <button
           class="icon-nav-btn action-btn-compact"
@@ -538,6 +548,15 @@
   alt={previewImageAlt}
   isOpen={isImagePreviewOpen}
   onClose={() => (isImagePreviewOpen = false)}
+/>
+
+<LorebookModal
+  isOpen={isLorebookOpen}
+  {settings}
+  onSettingsUpdated={(updated) => {
+    settings = updated;
+  }}
+  onClose={() => (isLorebookOpen = false)}
 />
 
 <style>
