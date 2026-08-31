@@ -20,6 +20,13 @@
   let editDraft = '';
   let copied = false;
 
+  // Touch Swipe Gesture State
+  let touchStartX = 0;
+  let touchStartY = 0;
+  let touchCurrentX = 0;
+  let touchCurrentY = 0;
+  let isDragging = false;
+  let offsetX = 0;
   $: isUser = message.role === 'User';
   $: displayName = isUser ? userName : characterName;
   $: avatarSrc = isUser ? userAvatar : characterAvatar;
@@ -73,9 +80,75 @@
       }
     }
   }
+
+  function handleTouchStart(e: TouchEvent) {
+    if (isGenerating || isEditing || message.sibling_total <= 1) return;
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+    touchCurrentX = touchStartX;
+    touchCurrentY = touchStartY;
+    isDragging = true;
+    offsetX = 0;
+  }
+
+  function handleTouchMove(e: TouchEvent) {
+    if (!isDragging) return;
+    touchCurrentX = e.touches[0].clientX;
+    touchCurrentY = e.touches[0].clientY;
+    const deltaX = touchCurrentX - touchStartX;
+    const deltaY = touchCurrentY - touchStartY;
+
+    // Only capture if primarily horizontal
+    if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 8) {
+      if (deltaX > 0 && !message.can_swipe_left) {
+        offsetX = deltaX * 0.15; // resistance
+      } else if (deltaX < 0 && !message.can_swipe_right) {
+        offsetX = deltaX * 0.15; // resistance
+      } else {
+        offsetX = deltaX * 0.45;
+      }
+    }
+  }
+
+  function handleTouchEnd() {
+    if (!isDragging) return;
+    isDragging = false;
+    const deltaX = touchCurrentX - touchStartX;
+    const deltaY = touchCurrentY - touchStartY;
+
+    if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 40) {
+      if (deltaX < -40 && message.can_swipe_right) {
+        onSwipe(message.parent_id, message.sibling_index + 1);
+      } else if (deltaX > 40 && message.can_swipe_left) {
+        onSwipe(message.parent_id, message.sibling_index - 1);
+      }
+    }
+
+    offsetX = 0;
+  }
+
+  function handleTouchCancel() {
+    isDragging = false;
+    offsetX = 0;
+  }
 </script>
 
-<div class="message-wrapper {isUser ? 'user-msg' : 'assistant-msg'}">
+<div
+  class="message-wrapper {isUser ? 'user-msg' : 'assistant-msg'} {isDragging ? 'is-dragging' : ''}"
+  style="transform: translateX({offsetX}px); transition: {isDragging ? 'none' : 'transform 0.2s ease'};"
+  on:touchstart={handleTouchStart}
+  on:touchmove={handleTouchMove}
+  on:touchend={handleTouchEnd}
+  on:touchcancel={handleTouchCancel}
+  role="region"
+  aria-label="chat message"
+>
+  {#if isDragging && offsetX > 25 && message.can_swipe_left}
+    <div class="swipe-hint hint-left">◀ Prev ({message.sibling_index} / {message.sibling_total})</div>
+  {/if}
+  {#if isDragging && offsetX < -25 && message.can_swipe_right}
+    <div class="swipe-hint hint-right">Next ({message.sibling_index + 2} / {message.sibling_total}) ▶</div>
+  {/if}
   <!-- Avatar -->
   <div class="avatar-col">
     {#if avatarSrc}
@@ -193,8 +266,33 @@
     padding: 0.9rem 1.1rem;
     border-radius: 12px;
     transition: background 0.15s ease;
+    position: relative;
+    touch-action: pan-y;
   }
 
+  .swipe-hint {
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    background: #cba6f7;
+    color: #11111b;
+    font-weight: 700;
+    font-size: 0.78rem;
+    padding: 0.35rem 0.75rem;
+    border-radius: 20px;
+    pointer-events: none;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+    z-index: 20;
+    white-space: nowrap;
+  }
+
+  .hint-left {
+    left: 0.8rem;
+  }
+
+  .hint-right {
+    right: 0.8rem;
+  }
   .message-wrapper:hover {
     background: rgba(255, 255, 255, 0.025);
   }
@@ -546,6 +644,9 @@
       gap: 0.25rem;
     }
 
+    .swipe-new-btn {
+      display: none;
+    }
     .action-icon-btn {
       padding: 0.3rem 0.45rem;
       font-size: 0.75rem;

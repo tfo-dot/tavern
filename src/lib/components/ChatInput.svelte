@@ -226,8 +226,7 @@
     }
 
     .secondary-btn {
-      padding: 0.45rem 0.65rem;
-      font-size: 0.8rem;
+      display: none;
     }
 
     .shortcuts-hint {

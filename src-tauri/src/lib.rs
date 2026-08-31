@@ -123,11 +123,18 @@ async fn create_chat(
     let chat_title = title.unwrap_or_else(|| format!("Chat with {}", character.card.data.name));
     let mut tree = ChatTree::new(character_id.clone(), chat_title);
 
-    let greeting = first_mes.unwrap_or_else(|| character.card.data.first_mes.clone());
-    if !greeting.is_empty() {
-        tree.append_message(AuthorRole::Assistant, greeting, None);
+    let primary_greeting = first_mes.unwrap_or_else(|| character.card.data.first_mes.clone());
+    if !primary_greeting.is_empty() {
+        tree.append_message(AuthorRole::Assistant, primary_greeting, None);
     }
 
+    // Add all alternate greetings as sibling root swipes
+    for alt in &character.card.data.alternate_greetings {
+        if !alt.trim().is_empty() {
+            tree.add_swipe(None, alt.clone());
+        }
+    }
+    tree.active_root_index = 0;
     state.storage.save_chat(&tree)?;
 
     {
@@ -150,8 +157,19 @@ async fn create_chat(
 
 #[tauri::command]
 async fn load_chat(chat_id: String, state: State<'_, Arc<AppState>>) -> Result<ChatTree, String> {
-    let tree = state.storage.load_chat(&chat_id)?;
+    let mut tree = state.storage.load_chat(&chat_id)?;
     let character = state.storage.load_character(&tree.character_id)?;
+
+    // If chat tree has only 1 root message and character has alternate greetings, populate them as swipes
+    if tree.root_message_ids.len() == 1 && !character.card.data.alternate_greetings.is_empty() {
+        for alt in &character.card.data.alternate_greetings {
+            if !alt.trim().is_empty() && !tree.nodes.values().any(|n| n.parent_id.is_none() && n.content == *alt) {
+                tree.add_swipe(None, alt.clone());
+            }
+        }
+        tree.active_root_index = 0;
+        let _ = state.storage.save_chat(&tree);
+    }
 
     {
         let mut active_chat = state.active_chat.lock().await;
