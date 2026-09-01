@@ -82,6 +82,33 @@ export interface AppSettings {
   active_chat_id: string | null;
   active_persona_id?: string | null;
   global_lorebook_ids?: string[];
+  device_name?: string;
+  sync_port?: number;
+  sync_pin?: string;
+}
+
+export interface SyncDeviceInfo {
+  device_id: string;
+  device_name: string;
+  port: number;
+  version: string;
+  local_ips: string[];
+}
+
+export interface DiscoveredPeer {
+  device_id: string;
+  device_name: string;
+  address: string;
+  port: number;
+  last_seen_epoch_ms: number;
+}
+
+export interface SyncStats {
+  characters_synced: number;
+  chats_synced: number;
+  personas_synced: number;
+  lorebooks_synced: number;
+  message: string;
 }
 export interface UserPersona {
   id: string;

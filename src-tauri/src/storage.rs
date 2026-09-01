@@ -4,8 +4,12 @@ use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use engine::character::{Character, CharacterCardV2, UserPersona};
 use engine::chat::ChatTree;
+use engine::crdt::TavernCrdtDoc;
 use engine::lorebook::{parse_lorebook, Lorebook};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::sync::protocol::SyncStats;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -26,6 +30,12 @@ pub struct AppSettings {
     pub active_persona_id: Option<String>,
     #[serde(default)]
     pub global_lorebook_ids: Vec<String>,
+    #[serde(default)]
+    pub device_name: Option<String>,
+    #[serde(default)]
+    pub sync_port: Option<u16>,
+    #[serde(default)]
+    pub sync_pin: Option<String>,
 }
 
 impl Default for AppSettings {
@@ -46,6 +56,9 @@ impl Default for AppSettings {
             active_chat_id: None,
             active_persona_id: None,
             global_lorebook_ids: Vec::new(),
+            device_name: None,
+            sync_port: None,
+            sync_pin: None,
         }
     }
 }
@@ -155,7 +168,12 @@ impl StorageManager {
     pub fn save_character(&self, character: &Character) -> Result<(), String> {
         let path = self.characters_dir().join(format!("{}.json", character.id));
         let data = serde_json::to_string_pretty(character).map_err(|e| e.to_string())?;
-        fs::write(path, data).map_err(|e| e.to_string())
+        fs::write(path, data).map_err(|e| e.to_string())?;
+        if let Ok(doc) = self.load_crdt_doc() {
+            let _ = doc.set_character(character);
+            let _ = self.save_crdt_doc(&doc);
+        }
+        Ok(())
     }
 
     pub fn load_character(&self, id: &str) -> Result<Character, String> {
@@ -189,6 +207,10 @@ impl StorageManager {
         if path.exists() {
             fs::remove_file(path).map_err(|e| e.to_string())?;
         }
+        if let Ok(doc) = self.load_crdt_doc() {
+            let _ = doc.delete_character(id);
+            let _ = self.save_crdt_doc(&doc);
+        }
         if let Ok(chats) = self.list_chats_for_character(id) {
             for chat in chats {
                 let _ = self.delete_chat(&chat.id);
@@ -202,7 +224,12 @@ impl StorageManager {
     pub fn save_chat(&self, chat: &ChatTree) -> Result<(), String> {
         let path = self.chats_dir().join(format!("{}.json", chat.id));
         let data = serde_json::to_string_pretty(chat).map_err(|e| e.to_string())?;
-        fs::write(path, data).map_err(|e| e.to_string())
+        fs::write(path, data).map_err(|e| e.to_string())?;
+        if let Ok(doc) = self.load_crdt_doc() {
+            let _ = doc.set_chat(chat);
+            let _ = self.save_crdt_doc(&doc);
+        }
+        Ok(())
     }
 
     pub fn load_chat(&self, id: &str) -> Result<ChatTree, String> {
@@ -263,6 +290,12 @@ impl StorageManager {
         if path.exists() {
             fs::remove_file(path).map_err(|e| e.to_string())?;
         }
+        if let Ok(doc) = self.load_crdt_doc() {
+            if let Ok(uuid_val) = Uuid::parse_str(id) {
+                let _ = doc.delete_chat(&uuid_val);
+                let _ = self.save_crdt_doc(&doc);
+            }
+        }
         Ok(())
     }
 
@@ -289,7 +322,12 @@ impl StorageManager {
     pub fn save_user_persona(&self, persona: &UserPersona) -> Result<(), String> {
         let path = self.personas_dir().join(format!("{}.json", persona.id));
         let data = serde_json::to_string_pretty(persona).map_err(|e| e.to_string())?;
-        fs::write(path, data).map_err(|e| e.to_string())
+        fs::write(path, data).map_err(|e| e.to_string())?;
+        if let Ok(doc) = self.load_crdt_doc() {
+            let _ = doc.set_persona(persona);
+            let _ = self.save_crdt_doc(&doc);
+        }
+        Ok(())
     }
 
     pub fn load_user_persona(&self, id: &str) -> Result<UserPersona, String> {
@@ -327,6 +365,10 @@ impl StorageManager {
         if path.exists() {
             fs::remove_file(path).map_err(|e| e.to_string())?;
         }
+        if let Ok(doc) = self.load_crdt_doc() {
+            let _ = doc.delete_persona(id);
+            let _ = self.save_crdt_doc(&doc);
+        }
         Ok(())
     }
 
@@ -335,7 +377,12 @@ impl StorageManager {
     pub fn save_lorebook(&self, lorebook: &Lorebook) -> Result<(), String> {
         let path = self.lorebooks_dir().join(format!("{}.json", lorebook.id));
         let data = serde_json::to_string_pretty(lorebook).map_err(|e| e.to_string())?;
-        fs::write(path, data).map_err(|e| e.to_string())
+        fs::write(path, data).map_err(|e| e.to_string())?;
+        if let Ok(doc) = self.load_crdt_doc() {
+            let _ = doc.set_lorebook(lorebook);
+            let _ = self.save_crdt_doc(&doc);
+        }
+        Ok(())
     }
 
     pub fn load_lorebook(&self, id: &str) -> Result<Lorebook, String> {
@@ -369,6 +416,10 @@ impl StorageManager {
         if path.exists() {
             fs::remove_file(path).map_err(|e| e.to_string())?;
         }
+        if let Ok(doc) = self.load_crdt_doc() {
+            let _ = doc.delete_lorebook(id);
+            let _ = self.save_crdt_doc(&doc);
+        }
         Ok(())
     }
 
@@ -381,5 +432,199 @@ impl StorageManager {
     pub fn export_lorebook_json(&self, id: &str) -> Result<String, String> {
         let book = self.load_lorebook(id)?;
         serde_json::to_string_pretty(&book).map_err(|e| e.to_string())
+    }
+
+    // --- CRDT Sync Integration ---
+
+    pub fn crdt_doc_path(&self) -> PathBuf {
+        self.base_dir.join("crdt_doc.bin")
+    }
+
+    pub fn load_crdt_doc(&self) -> Result<TavernCrdtDoc, String> {
+        let path = self.crdt_doc_path();
+        if path.exists() {
+            let bytes = fs::read(&path).map_err(|e| e.to_string())?;
+            TavernCrdtDoc::from_snapshot(&bytes)
+        } else {
+            let doc = TavernCrdtDoc::new();
+            self.populate_crdt_from_disk(&doc)?;
+            let _ = self.save_crdt_doc(&doc);
+            Ok(doc)
+        }
+    }
+
+    pub fn save_crdt_doc(&self, doc: &TavernCrdtDoc) -> Result<(), String> {
+        let bytes = doc.export_snapshot()?;
+        fs::write(self.crdt_doc_path(), bytes).map_err(|e| e.to_string())
+    }
+
+    pub fn populate_crdt_from_disk(&self, doc: &TavernCrdtDoc) -> Result<(), String> {
+        if let Ok(characters) = self.list_characters() {
+            for c in characters {
+                let _ = doc.set_character(&c);
+            }
+        }
+        if let Ok(entries) = fs::read_dir(self.chats_dir()) {
+            for entry in entries.flatten() {
+                if entry.path().extension().and_then(|s| s.to_str()) == Some("json") {
+                    if let Ok(content) = fs::read_to_string(entry.path()) {
+                        if let Ok(chat) = serde_json::from_str::<ChatTree>(&content) {
+                            let _ = doc.set_chat(&chat);
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(personas) = self.list_user_personas() {
+            for p in personas {
+                let _ = doc.set_persona(&p);
+            }
+        }
+        if let Ok(lorebooks) = self.list_lorebooks() {
+            for b in lorebooks {
+                let _ = doc.set_lorebook(&b);
+            }
+        }
+        doc.commit();
+        Ok(())
+    }
+
+    pub fn sync_disk_from_crdt(&self, doc: &TavernCrdtDoc) -> Result<SyncStats, String> {
+        let mut stats = SyncStats::default();
+        let tombstones = doc.get_tombstones().unwrap_or_default();
+
+        // 1. Characters
+        if let Ok(characters) = doc.get_characters() {
+            for c in characters {
+                let tomb_key = format!("character:{}", c.id);
+                if let Some(tomb) = tombstones.get(&tomb_key) {
+                    if tomb.deleted_at >= c.updated_at {
+                        let path = self.characters_dir().join(format!("{}.json", c.id));
+                        if path.exists() {
+                            let _ = fs::remove_file(path);
+                        }
+                        continue;
+                    }
+                }
+                let should_write = match self.load_character(&c.id) {
+                    Ok(existing) => c.updated_at > existing.updated_at,
+                    Err(_) => true,
+                };
+                if should_write {
+                    let path = self.characters_dir().join(format!("{}.json", c.id));
+                    if let Ok(data) = serde_json::to_string_pretty(&c) {
+                        let _ = fs::write(path, data);
+                        stats.characters_synced += 1;
+                    }
+                }
+            }
+        }
+
+        // 2. Chats
+        if let Ok(chats) = doc.get_chats() {
+            for chat in chats {
+                let tomb_key = format!("chat:{}", chat.id);
+                if let Some(tomb) = tombstones.get(&tomb_key) {
+                    if tomb.deleted_at >= chat.updated_at {
+                        let path = self.chats_dir().join(format!("{}.json", chat.id));
+                        if path.exists() {
+                            let _ = fs::remove_file(path);
+                        }
+                        continue;
+                    }
+                }
+                let should_write = match self.load_chat(&chat.id.to_string()) {
+                    Ok(existing) => chat.updated_at > existing.updated_at,
+                    Err(_) => true,
+                };
+                if should_write {
+                    let path = self.chats_dir().join(format!("{}.json", chat.id));
+                    if let Ok(data) = serde_json::to_string_pretty(&chat) {
+                        let _ = fs::write(path, data);
+                        stats.chats_synced += 1;
+                    }
+                }
+            }
+        }
+
+        // 3. Personas
+        if let Ok(personas) = doc.get_personas() {
+            for p in personas {
+                let tomb_key = format!("persona:{}", p.id);
+                if let Some(_tomb) = tombstones.get(&tomb_key) {
+                    let path = self.personas_dir().join(format!("{}.json", p.id));
+                    if path.exists() {
+                        let _ = fs::remove_file(path);
+                    }
+                    continue;
+                }
+                let path = self.personas_dir().join(format!("{}.json", p.id));
+                if let Ok(data) = serde_json::to_string_pretty(&p) {
+                    let _ = fs::write(path, data);
+                    stats.personas_synced += 1;
+                }
+            }
+        }
+
+        // 4. Lorebooks
+        if let Ok(lorebooks) = doc.get_lorebooks() {
+            for b in lorebooks {
+                let tomb_key = format!("lorebook:{}", b.id);
+                if let Some(tomb) = tombstones.get(&tomb_key) {
+                    if tomb.deleted_at >= b.updated_at {
+                        let path = self.lorebooks_dir().join(format!("{}.json", b.id));
+                        if path.exists() {
+                            let _ = fs::remove_file(path);
+                        }
+                        continue;
+                    }
+                }
+                let should_write = match self.load_lorebook(&b.id) {
+                    Ok(existing) => b.updated_at > existing.updated_at,
+                    Err(_) => true,
+                };
+                if should_write {
+                    let path = self.lorebooks_dir().join(format!("{}.json", b.id));
+                    if let Ok(data) = serde_json::to_string_pretty(&b) {
+                        let _ = fs::write(path, data);
+                        stats.lorebooks_synced += 1;
+                    }
+                }
+            }
+        }
+
+        // Also sweep any local files matching active tombstones
+        for (key, _) in &tombstones {
+            if let Some(id) = key.strip_prefix("character:") {
+                let p = self.characters_dir().join(format!("{id}.json"));
+                if p.exists() {
+                    let _ = fs::remove_file(p);
+                }
+            } else if let Some(id) = key.strip_prefix("chat:") {
+                let p = self.chats_dir().join(format!("{id}.json"));
+                if p.exists() {
+                    let _ = fs::remove_file(p);
+                }
+            } else if let Some(id) = key.strip_prefix("persona:") {
+                let p = self.personas_dir().join(format!("{id}.json"));
+                if p.exists() {
+                    let _ = fs::remove_file(p);
+                }
+            } else if let Some(id) = key.strip_prefix("lorebook:") {
+                let p = self.lorebooks_dir().join(format!("{id}.json"));
+                if p.exists() {
+                    let _ = fs::remove_file(p);
+                }
+            }
+        }
+
+        stats.message = format!(
+            "Synced {} characters, {} chats, {} personas, {} lorebooks",
+            stats.characters_synced,
+            stats.chats_synced,
+            stats.personas_synced,
+            stats.lorebooks_synced
+        );
+        Ok(stats)
     }
 }

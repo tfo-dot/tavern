@@ -12,7 +12,9 @@ use engine::prompt::{build_chat_prompt_with_lorebooks, PromptConfig};
 use tauri::{Emitter, Manager, State, Window};
 
 pub mod storage;
+pub mod sync;
 use storage::{AppSettings, ChatSummary, StorageManager};
+use sync::{DiscoveredPeer, SyncDeviceInfo, SyncManager, SyncStats};
 
 pub struct AppState {
     pub storage: Arc<StorageManager>,
@@ -21,8 +23,8 @@ pub struct AppState {
     pub settings: Mutex<AppSettings>,
     pub user_persona: Mutex<UserPersona>,
     pub abort_tx: Mutex<Option<watch::Sender<bool>>>,
+    pub sync_manager: parking_lot::RwLock<Option<Arc<SyncManager>>>,
 }
-
 // --- Character Commands ---
 
 #[tauri::command]
@@ -561,6 +563,70 @@ async fn abort_generation(state: State<'_, Arc<AppState>>) -> Result<(), String>
     Ok(())
 }
 
+// --- Sync Commands ---
+
+#[tauri::command]
+async fn get_sync_device_info(state: State<'_, Arc<AppState>>) -> Result<SyncDeviceInfo, String> {
+    let mgr = {
+        let mgr_lock = state.sync_manager.read();
+        mgr_lock.as_ref().ok_or("Sync manager not initialized")?.clone()
+    };
+    Ok(mgr.get_device_info().await)
+}
+
+#[tauri::command]
+async fn scan_sync_peers(
+    timeout_ms: Option<u64>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Vec<DiscoveredPeer>, String> {
+    let mgr = {
+        let mgr_lock = state.sync_manager.read();
+        mgr_lock.as_ref().ok_or("Sync manager not initialized")?.clone()
+    };
+    mgr.scan_peers(timeout_ms.unwrap_or(1500)).await
+}
+
+#[tauri::command]
+async fn trigger_sync(
+    target_address: String,
+    pin: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<SyncStats, String> {
+    let mgr = {
+        let mgr_lock = state.sync_manager.read();
+        mgr_lock.as_ref().ok_or("Sync manager not initialized")?.clone()
+    };
+    mgr.sync_with(&target_address, pin).await
+}
+
+#[tauri::command]
+async fn update_sync_settings(
+    device_name: Option<String>,
+    sync_pin: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let mut settings = state.settings.lock().await;
+    if let Some(name) = &device_name {
+        settings.device_name = Some(name.clone());
+        let mgr_opt = {
+            let mgr_lock = state.sync_manager.read();
+            mgr_lock.clone()
+        };
+        if let Some(mgr) = mgr_opt {
+            mgr.update_device_name(name.clone()).await;
+        }
+    }
+    if let Some(pin) = &sync_pin {
+        settings.sync_pin = if pin.trim().is_empty() {
+            None
+        } else {
+            Some(pin.clone())
+        };
+    }
+    state.storage.save_settings(&settings)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -572,7 +638,7 @@ pub fn run() {
                 .app_data_dir()
                 .unwrap_or_else(|_| PathBuf::from("./tavern_data"));
 
-            let storage = Arc::new(StorageManager::new(base_dir));
+            let storage = Arc::new(StorageManager::new(base_dir.clone()));
             let settings = storage.load_settings();
             let user_persona = if let Some(p_id) = &settings.active_persona_id {
                 storage.load_user_persona(p_id).unwrap_or_else(|_| {
@@ -602,10 +668,23 @@ pub fn run() {
                 storage,
                 active_chat: Mutex::new(initial_chat),
                 active_character: Mutex::new(initial_char),
-                settings: Mutex::new(settings),
+                settings: Mutex::new(settings.clone()),
                 user_persona: Mutex::new(user_persona),
                 abort_tx: Mutex::new(None),
+                sync_manager: parking_lot::RwLock::new(None),
             });
+
+            let sync_mgr = Arc::new(SyncManager::new(
+                base_dir,
+                &settings,
+                Arc::clone(&state),
+                app.handle().clone(),
+            ));
+            sync_mgr.start();
+            {
+                let mut w = state.sync_manager.write();
+                *w = Some(sync_mgr);
+            }
 
             app.manage(state);
             Ok(())
@@ -643,6 +722,10 @@ pub fn run() {
             delete_lorebook,
             import_lorebook,
             export_lorebook_json,
+            get_sync_device_info,
+            scan_sync_peers,
+            trigger_sync,
+            update_sync_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -41,6 +41,7 @@
   import CreatorNotesModal from '$lib/components/CreatorNotesModal.svelte';
   import ImagePreviewModal from '$lib/components/ImagePreviewModal.svelte';
   import LorebookModal from '$lib/components/LorebookModal.svelte';
+  import SyncModal from '$lib/components/SyncModal.svelte';
   let characters: Character[] = [];
   let activeCharacter: Character | null = null;
   let chats: ChatSummary[] = [];
@@ -60,6 +61,7 @@
   let isCreatorNotesOpen = false;
   let isImagePreviewOpen = false;
   let isLorebookOpen = false;
+  let isSyncOpen = false;
   let previewImageSrc: string | null = null;
   let previewImageAlt: string = '';
   let editingCharacter: Character | null = null;
@@ -145,6 +147,22 @@
   async function refreshMessages() {
     messages = await getActiveMessages();
     await scrollToBottom();
+  }
+
+  async function handleSyncSuccess() {
+    await refreshCharacters();
+    if (activeCharacter) {
+      await refreshChats(activeCharacter.id);
+    }
+    if (activeChatId) {
+      await refreshMessages();
+    }
+    try {
+      userPersona = await getActiveUserPersona();
+      settings = await getSettings();
+    } catch (e) {
+      console.error('Error refreshing state after sync:', e);
+    }
   }
 
   // --- Character Handlers ---
@@ -329,6 +347,7 @@
     onDeleteChat={handleDeleteChat}
     onDeleteCharacter={handleDeleteCharacter}
     onOpenLorebooks={() => (isLorebookOpen = true)}
+    onOpenSync={() => (isSyncOpen = true)}
     onClose={() => (isSidebarOpen = false)}
   />
 
@@ -415,6 +434,15 @@
         >
           <span class="btn-icon">⚙️</span>
           <span class="btn-text">Settings</span>
+        </button>
+
+        <button
+          class="icon-nav-btn action-btn-compact sync-nav-btn"
+          on:click={() => (isSyncOpen = true)}
+          title="Local Device Sync (CRDT)"
+        >
+          <span class="btn-icon">🔄</span>
+          <span class="btn-text">Sync</span>
         </button>
       </div>
     </header>
@@ -557,6 +585,12 @@
     settings = updated;
   }}
   onClose={() => (isLorebookOpen = false)}
+/>
+
+<SyncModal
+  isOpen={isSyncOpen}
+  onClose={() => (isSyncOpen = false)}
+  onSyncSuccess={handleSyncSuccess}
 />
 
 <style>

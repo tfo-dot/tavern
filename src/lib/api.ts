@@ -8,6 +8,9 @@ import type {
   UserPersona,
   AuthorRole,
   Lorebook,
+  SyncDeviceInfo,
+  DiscoveredPeer,
+  SyncStats,
 } from './types';
 // Character APIs
 export async function getAllCharacters(): Promise<Character[]> {
@@ -170,4 +173,21 @@ export async function importLorebook(fileBytes: number[] | Uint8Array): Promise<
 
 export async function exportLorebookJson(id: string): Promise<string> {
   return await invoke<string>('export_lorebook_json', { id });
+}
+
+// Local CRDT Sync APIs
+export async function getSyncDeviceInfo(): Promise<SyncDeviceInfo> {
+  return await invoke<SyncDeviceInfo>('get_sync_device_info');
+}
+
+export async function scanSyncPeers(timeoutMs?: number): Promise<DiscoveredPeer[]> {
+  return await invoke<DiscoveredPeer[]>('scan_sync_peers', { timeoutMs });
+}
+
+export async function triggerSync(targetAddress: string, pin?: string): Promise<SyncStats> {
+  return await invoke<SyncStats>('trigger_sync', { targetAddress, pin });
+}
+
+export async function updateSyncSettings(deviceName?: string, syncPin?: string): Promise<void> {
+  await invoke('update_sync_settings', { deviceName, syncPin });
 }

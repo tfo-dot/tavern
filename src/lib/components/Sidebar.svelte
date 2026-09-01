@@ -15,6 +15,7 @@
   export let onDeleteChat: (id: string) => void;
   export let onDeleteCharacter: (id: string) => void;
   export let onOpenLorebooks: (() => void) | undefined = undefined;
+  export let onOpenSync: (() => void) | undefined = undefined;
   export let onClose: () => void;
   let activeTab: 'characters' | 'chats' = 'characters';
   let searchQuery = '';
@@ -249,8 +250,8 @@
     </div>
   {/if}
 
-  {#if onOpenLorebooks}
-    <div class="sidebar-footer">
+  <div class="sidebar-footer">
+    {#if onOpenLorebooks}
       <button
         class="lorebook-sidebar-btn"
         on:click={() => {
@@ -259,10 +260,22 @@
         }}
       >
         <span class="footer-btn-icon">📖</span>
-        <span class="footer-btn-text">World Info & Lorebooks</span>
+        <span class="footer-btn-text">Lorebooks</span>
       </button>
-    </div>
-  {/if}
+    {/if}
+    {#if onOpenSync}
+      <button
+        class="lorebook-sidebar-btn sync-footer-btn"
+        on:click={() => {
+          if (onOpenSync) onOpenSync();
+          if (window.innerWidth <= 768) onClose();
+        }}
+      >
+        <span class="footer-btn-icon">🔄</span>
+        <span class="footer-btn-text">Device Sync</span>
+      </button>
+    {/if}
+  </div>
 </aside>
 
 <style>
@@ -696,8 +709,9 @@
     padding: 0.8rem 1rem;
     border-top: 1px solid #313244;
     background: #11111b;
+    display: flex;
+    gap: 0.5rem;
   }
-
   .lorebook-sidebar-btn {
     width: 100%;
     display: flex;

@@ -268,3 +268,76 @@ fn test_lorebook_full_pipeline_activation_and_budgeting() {
     let at_depth_found = prompt_msgs.iter().any(|m| m.content.contains("high celestial winds"));
     assert!(at_depth_found, "At-depth entry must be injected into chat history messages");
 }
+
+#[test]
+fn test_version_vector_serialization() {
+    use engine::crdt::TavernCrdtDoc;
+    use loro::VersionVector;
+
+    let doc = TavernCrdtDoc::new();
+    let vv = doc.state_vector();
+    let bytes = vv.encode();
+    let decoded = VersionVector::decode(&bytes).unwrap();
+    assert_eq!(vv, decoded);
+}
+
+#[test]
+fn test_crdt_concurrent_edits_and_swipes_sync() {
+    use engine::character::Character;
+    use engine::chat::{AuthorRole, ChatTree};
+    use engine::crdt::TavernCrdtDoc;
+    use engine::lorebook::{Lorebook, LorebookEntry};
+
+    let doc_a = TavernCrdtDoc::new();
+    let doc_b = TavernCrdtDoc::new();
+
+    // Create initial character and chat
+    let mut char1 = Character::new("Elena".to_string(), "Hello!".to_string(), None);
+    char1.id = "char_elena".to_string();
+    doc_a.set_character(&char1).unwrap();
+
+    let mut chat1 = ChatTree::new(char1.id.clone(), "Story Chapter 1".to_string());
+    let m1 = chat1.append_message(AuthorRole::User, "Where are we?".to_string(), None);
+    let m2_a = chat1.append_message(AuthorRole::Assistant, "In the enchanted forest.".to_string(), Some(m1));
+    doc_a.set_chat(&chat1).unwrap();
+
+    // Sync A -> B
+    let vv_b = doc_b.state_vector();
+    let delta_a_to_b = doc_a.export_updates_from(&vv_b).unwrap();
+    doc_b.import_updates(&delta_a_to_b).unwrap();
+
+    // Device A adds an alternate swipe generation under m1
+    let mut chat_a = doc_a.get_chats().unwrap().into_iter().next().unwrap();
+    let m2_swipe = chat_a.add_swipe(Some(m1), "Near the crystal lake.".to_string()).unwrap();
+    doc_a.set_chat(&chat_a).unwrap();
+
+    // Device B concurrently adds a lorebook entry
+    let mut book = Lorebook::default();
+    book.id = "world_lore".to_string();
+    let mut entry = LorebookEntry::default();
+    entry.id = "entry_1".to_string();
+    entry.keys = vec!["crystal lake".to_string()];
+    entry.content = "A mystical lake that reflects memories.".to_string();
+    book.entries.push(entry);
+    doc_b.set_lorebook(&book).unwrap();
+
+    let vv_a_before = doc_a.state_vector();
+    let vv_b_before = doc_b.state_vector();
+
+    let delta_b_to_a = doc_b.export_updates_from(&vv_a_before).unwrap();
+    let delta_a_to_b_2 = doc_a.export_updates_from(&vv_b_before).unwrap();
+
+    doc_a.import_updates(&delta_b_to_a).unwrap();
+    doc_b.import_updates(&delta_a_to_b_2).unwrap();
+
+    // Verify convergence on both devices
+    let chats_on_b = doc_b.get_chats().unwrap();
+    assert_eq!(chats_on_b.len(), 1);
+    assert_eq!(chats_on_b[0].nodes.len(), 3); // m1, m2_a, m2_swipe
+    assert!(chats_on_b[0].nodes.contains_key(&m2_swipe));
+
+    let books_on_a = doc_a.get_lorebooks().unwrap();
+    assert_eq!(books_on_a.len(), 1);
+    assert_eq!(books_on_a[0].entries.len(), 1);
+    assert_eq!(books_on_a[0].entries[0].keys[0], "crystal lake");
+}

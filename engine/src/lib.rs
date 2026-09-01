@@ -5,6 +5,7 @@ pub mod llm;
 pub mod template;
 pub mod prompt;
 pub mod lorebook;
+pub mod crdt;
 
 #[cfg(test)]
 mod tests {
@@ -305,5 +306,75 @@ mod tests {
         // Verify at_depth content was inserted in history
         let at_depth_found = msgs.iter().any(|m| m.content.contains("THE_TOWER_LORE_AT_DEPTH"));
         assert!(at_depth_found, "At-depth entry should be inserted into history messages");
+    }
+    #[test]
+    fn test_crdt_sync_roundtrip() {
+        use character::Character;
+        use crdt::TavernCrdtDoc;
+        use lorebook::Lorebook;
+
+        let doc_a = TavernCrdtDoc::new();
+        let doc_b = TavernCrdtDoc::new();
+
+        // Device A creates a character and a persona
+        let mut char_a = Character::new("Aria".to_string(), "Hello!".to_string(), None);
+        char_a.id = "char_1".to_string();
+        doc_a.set_character(&char_a).unwrap();
+
+        let persona_a = UserPersona {
+            id: "p_1".to_string(),
+            name: "Adventurer".to_string(),
+            description: "A brave wanderer".to_string(),
+            avatar_data_url: None,
+        };
+        doc_a.set_persona(&persona_a).unwrap();
+
+        // Device B creates a chat and a lorebook
+        let mut chat_b = ChatTree::new("char_1".to_string(), "Chat with Aria".to_string());
+        let m1 = chat_b.append_message(AuthorRole::User, "Hello Aria!".to_string(), None);
+        chat_b.append_message(AuthorRole::Assistant, "Greetings traveler!".to_string(), Some(m1));
+        doc_b.set_chat(&chat_b).unwrap();
+
+        let mut book_b = Lorebook::default();
+        book_b.id = "book_1".to_string();
+        book_b.name = "Kingdom Lore".to_string();
+        doc_b.set_lorebook(&book_b).unwrap();
+
+        // Sync Step 1: Device A -> Device B
+        let vv_b = doc_b.state_vector();
+        let updates_from_a = doc_a.export_updates_from(&vv_b).unwrap();
+        doc_b.import_updates(&updates_from_a).unwrap();
+
+        // Sync Step 2: Device B -> Device A
+        let vv_a = doc_a.state_vector();
+        let updates_from_b = doc_b.export_updates_from(&vv_a).unwrap();
+        doc_a.import_updates(&updates_from_b).unwrap();
+
+        // Verification: Both docs have everything
+        let chars_in_b = doc_b.get_characters().unwrap();
+        assert_eq!(chars_in_b.len(), 1);
+        assert_eq!(chars_in_b[0].card.data.name, "Aria");
+
+        let personas_in_b = doc_b.get_personas().unwrap();
+        assert_eq!(personas_in_b.len(), 1);
+        assert_eq!(personas_in_b[0].name, "Adventurer");
+
+        let chats_in_a = doc_a.get_chats().unwrap();
+        assert_eq!(chats_in_a.len(), 1);
+        assert_eq!(chats_in_a[0].title, "Chat with Aria");
+        assert_eq!(chats_in_a[0].nodes.len(), 2);
+
+        let books_in_a = doc_a.get_lorebooks().unwrap();
+        assert_eq!(books_in_a.len(), 1);
+        assert_eq!(books_in_a[0].name, "Kingdom Lore");
+
+        // Test Deletion sync: Device B deletes the persona
+        doc_b.delete_persona("p_1").unwrap();
+        let vv_a_after = doc_a.state_vector();
+        let del_updates = doc_b.export_updates_from(&vv_a_after).unwrap();
+        doc_a.import_updates(&del_updates).unwrap();
+
+        assert_eq!(doc_a.get_personas().unwrap().len(), 0);
+        assert_eq!(doc_b.get_personas().unwrap().len(), 0);
     }
 }
