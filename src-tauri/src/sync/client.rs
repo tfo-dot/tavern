@@ -33,7 +33,7 @@ pub async fn sync_with_peer(
         settings
             .device_name
             .clone()
-            .unwrap_or_else(|| get_default_device_name())
+            .unwrap_or_else(get_default_device_name)
     };
 
     // Step 1: Handshake

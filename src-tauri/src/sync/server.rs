@@ -62,7 +62,7 @@ async fn handle_info(State(ctx): State<ServerContext>) -> impl IntoResponse {
     let dev_name = settings
         .device_name
         .clone()
-        .unwrap_or_else(|| get_default_device_name());
+        .unwrap_or_else(get_default_device_name);
 
     let info = SyncDeviceInfo {
         device_id: ctx.device_id.clone(),
@@ -83,7 +83,7 @@ async fn handle_handshake(
     let dev_name = settings
         .device_name
         .clone()
-        .unwrap_or_else(|| get_default_device_name());
+        .unwrap_or_else(get_default_device_name);
 
     // Check PIN if configured
     if let Some(expected_pin) = &settings.sync_pin {

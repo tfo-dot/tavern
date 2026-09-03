@@ -1,9 +1,9 @@
-use std::io::Cursor;
-use base64::engine::general_purpose::STANDARD as BASE64;
-use base64::Engine;
-use png::{Decoder, Encoder};
-use thiserror::Error;
 use crate::character::{CharacterCardV1, CharacterCardV2};
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use png::{Decoder, Encoder};
+use std::io::Cursor;
+use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum CardError {
@@ -27,10 +27,10 @@ pub enum CardError {
 /// Returns the parsed V2 card and an optional base64 avatar data URL.
 pub fn parse_character_card(bytes: &[u8]) -> Result<(CharacterCardV2, Option<String>), CardError> {
     // 1. Try parsing as PNG with embedded metadata
-    if is_png(bytes) {
-        if let Ok(result) = parse_png_card(bytes) {
-            return Ok(result);
-        }
+    if is_png(bytes)
+        && let Ok(result) = parse_png_card(bytes)
+    {
+        return Ok(result);
     }
 
     // 2. Try parsing as raw JSON
@@ -42,17 +42,16 @@ pub fn parse_character_card(bytes: &[u8]) -> Result<(CharacterCardV2, Option<Str
             return Ok((card_v1.into(), None));
         }
         // Also check if JSON has "data" wrapper without spec
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str) {
-            if let Some(data_val) = val.get("data") {
-                if let Ok(card_data) = serde_json::from_value(data_val.clone()) {
-                    let card = CharacterCardV2 {
-                        spec: "chara_card_v2".to_string(),
-                        spec_version: "2.0".to_string(),
-                        data: card_data,
-                    };
-                    return Ok((card, None));
-                }
-            }
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_str)
+            && let Some(data_val) = val.get("data")
+            && let Ok(card_data) = serde_json::from_value(data_val.clone())
+        {
+            let card = CharacterCardV2 {
+                spec: "chara_card_v2".to_string(),
+                spec_version: "2.0".to_string(),
+                data: card_data,
+            };
+            return Ok((card, None));
         }
     }
 
@@ -73,7 +72,8 @@ fn parse_png_card(bytes: &[u8]) -> Result<(CharacterCardV2, Option<String>), Car
     let mut found_text: Option<String> = None;
 
     for chunk in &info.uncompressed_latin1_text {
-        if chunk.keyword.eq_ignore_ascii_case("chara") || chunk.keyword.eq_ignore_ascii_case("ccv3") {
+        if chunk.keyword.eq_ignore_ascii_case("chara") || chunk.keyword.eq_ignore_ascii_case("ccv3")
+        {
             found_text = Some(chunk.text.clone());
             break;
         }
@@ -81,22 +81,24 @@ fn parse_png_card(bytes: &[u8]) -> Result<(CharacterCardV2, Option<String>), Car
 
     if found_text.is_none() {
         for chunk in &info.compressed_latin1_text {
-            if chunk.keyword.eq_ignore_ascii_case("chara") || chunk.keyword.eq_ignore_ascii_case("ccv3") {
-                if let Ok(text) = chunk.get_text() {
-                    found_text = Some(text);
-                    break;
-                }
+            if (chunk.keyword.eq_ignore_ascii_case("chara")
+                || chunk.keyword.eq_ignore_ascii_case("ccv3"))
+                && let Ok(text) = chunk.get_text()
+            {
+                found_text = Some(text);
+                break;
             }
         }
     }
 
     if found_text.is_none() {
         for chunk in &info.utf8_text {
-            if chunk.keyword.eq_ignore_ascii_case("chara") || chunk.keyword.eq_ignore_ascii_case("ccv3") {
-                if let Ok(text) = chunk.get_text() {
-                    found_text = Some(text);
-                    break;
-                }
+            if (chunk.keyword.eq_ignore_ascii_case("chara")
+                || chunk.keyword.eq_ignore_ascii_case("ccv3"))
+                && let Ok(text) = chunk.get_text()
+            {
+                found_text = Some(text);
+                break;
             }
         }
     }
@@ -136,7 +138,12 @@ pub fn export_character_png(
             let mut buf = vec![0; reader.output_buffer_size()];
             let output_info = reader.next_frame(&mut buf)?;
             buf.truncate(output_info.buffer_size());
-            (output_info.width, output_info.height, buf, output_info.color_type)
+            (
+                output_info.width,
+                output_info.height,
+                buf,
+                output_info.color_type,
+            )
         } else {
             create_default_pixel_data()
         }
@@ -149,10 +156,16 @@ pub fn export_character_png(
         let mut encoder = Encoder::new(&mut output_bytes, width, height);
         encoder.set_color(color_type);
         encoder.set_depth(png::BitDepth::Eight);
-        encoder.add_text_chunk("chara".to_string(), b64_text).map_err(CardError::PngEncodingError)?;
+        encoder
+            .add_text_chunk("chara".to_string(), b64_text)
+            .map_err(CardError::PngEncodingError)?;
 
-        let mut writer = encoder.write_header().map_err(CardError::PngEncodingError)?;
-        writer.write_image_data(&image_data).map_err(CardError::PngEncodingError)?;
+        let mut writer = encoder
+            .write_header()
+            .map_err(CardError::PngEncodingError)?;
+        writer
+            .write_image_data(&image_data)
+            .map_err(CardError::PngEncodingError)?;
     }
 
     Ok(output_bytes)

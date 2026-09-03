@@ -33,6 +33,27 @@ export interface Character {
 
 export type AuthorRole = 'User' | 'Assistant' | 'System';
 
+export type TurnMode = 'Manual' | 'Natural' | 'Random';
+
+export interface GroupMember {
+  character_id: string;
+  enabled: boolean;
+  mute: boolean;
+}
+
+export interface Group {
+  id: string;
+  name: string;
+  description: string;
+  avatar_data_url: string | null;
+  members: GroupMember[];
+  turn_mode: TurnMode;
+  allow_self_responses: boolean;
+  auto_mode: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface MessageViewNode {
   id: string;
   parent_id: string | null;
@@ -43,6 +64,8 @@ export interface MessageViewNode {
   sibling_total: number;
   can_swipe_left: boolean;
   can_swipe_right: boolean;
+  character_id?: string | null;
+  name?: string | null;
 }
 
 export interface ChatTree {
@@ -54,6 +77,7 @@ export interface ChatTree {
   root_message_ids: string[];
   nodes: Record<string, unknown>;
   active_root_index: number;
+  group_id?: string | null;
 }
 
 export interface ChatSummary {
@@ -64,8 +88,8 @@ export interface ChatSummary {
   updated_at: string;
   message_count: number;
   last_message_preview: string;
+  group_id?: string | null;
 }
-
 export interface AppSettings {
   endpoint: string;
   api_key: string;

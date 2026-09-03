@@ -1,12 +1,12 @@
-use std::fs::{self, File};
-use std::io::Read;
-use std::path::PathBuf;
 use chrono::{DateTime, Utc};
 use engine::character::{Character, CharacterCardV2, UserPersona};
-use engine::chat::ChatTree;
+use engine::chat::{export_sillytavern_chat_jsonl, import_sillytavern_chat_jsonl, ChatTree, Group};
 use engine::crdt::TavernCrdtDoc;
 use engine::lorebook::{parse_lorebook, Lorebook};
 use serde::{Deserialize, Serialize};
+use std::fs::{self, File};
+use std::io::Read;
+use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::sync::protocol::SyncStats;
@@ -72,6 +72,8 @@ pub struct ChatSummary {
     pub updated_at: DateTime<Utc>,
     pub message_count: usize,
     pub last_message_preview: String,
+    #[serde(default)]
+    pub group_id: Option<String>,
 }
 
 pub struct StorageManager {
@@ -103,6 +105,9 @@ impl StorageManager {
         self.base_dir.join("lorebooks")
     }
 
+    fn groups_dir(&self) -> PathBuf {
+        self.base_dir.join("groups")
+    }
     fn settings_path(&self) -> PathBuf {
         self.base_dir.join("settings.json")
     }
@@ -116,6 +121,7 @@ impl StorageManager {
         let _ = fs::create_dir_all(self.chats_dir());
         let _ = fs::create_dir_all(self.personas_dir());
         let _ = fs::create_dir_all(self.lorebooks_dir());
+        let _ = fs::create_dir_all(self.groups_dir());
     }
 
     fn ensure_starter_data(&self) {
@@ -125,14 +131,21 @@ impl StorageManager {
                 let mut card = CharacterCardV2::default();
                 card.data.name = "Seraphina".to_string();
                 card.data.description = "A warm, enigmatic tavern keeper with silver hair and amethyst eyes. She runs the Starlight Tavern, a mystical refuge between worlds where travelers rest and share their stories.".to_string();
-                card.data.personality = "Empathetic, witty, observant, gentle yet possessing ancient arcane knowledge.".to_string();
+                card.data.personality =
+                    "Empathetic, witty, observant, gentle yet possessing ancient arcane knowledge."
+                        .to_string();
                 card.data.scenario = "{{user}} pushes open the heavy oak doors of the Starlight Tavern on a stormy night, seeking shelter from the bitter cold.".to_string();
                 card.data.first_mes = "*Rain lashes against the stained glass windows as the heavy oak door creaks open. Behind the polished mahogany counter, Seraphina looks up from polishing a crystal glass, her amethyst eyes sparkling warmly.*\n\n\"Welcome, traveler! Step inside and warm yourself by the hearth. Come, take a seat. What tale or drink brings you to my tavern tonight?\"".to_string();
                 card.data.alternate_greetings = vec![
                     "*The tavern is quiet tonight, soft lute music playing from an unseen corner. Seraphina smiles gently as you step in.*\n\n\"Back again, traveler? I just brewed fresh spiced cider. Pull up a chair and let's catch up.\"".to_string()
                 ];
-                card.data.tags = vec!["Fantasy".to_string(), "Tavern".to_string(), "Mystical".to_string(), "Friendly".to_string()];
-                
+                card.data.tags = vec![
+                    "Fantasy".to_string(),
+                    "Tavern".to_string(),
+                    "Mystical".to_string(),
+                    "Friendly".to_string(),
+                ];
+
                 let char_obj = Character::from_card(card, None);
                 let _ = self.save_character(&char_obj);
             }
@@ -180,7 +193,8 @@ impl StorageManager {
         let path = self.characters_dir().join(format!("{id}.json"));
         let mut file = File::open(path).map_err(|e| e.to_string())?;
         let mut content = String::new();
-        file.read_to_string(&mut content).map_err(|e| e.to_string())?;
+        file.read_to_string(&mut content)
+            .map_err(|e| e.to_string())?;
         serde_json::from_str(&content).map_err(|e| e.to_string())
     }
 
@@ -198,7 +212,7 @@ impl StorageManager {
                 }
             }
         }
-        characters.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        characters.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(characters)
     }
 
@@ -236,7 +250,8 @@ impl StorageManager {
         let path = self.chats_dir().join(format!("{id}.json"));
         let mut file = File::open(path).map_err(|e| e.to_string())?;
         let mut content = String::new();
-        file.read_to_string(&mut content).map_err(|e| e.to_string())?;
+        file.read_to_string(&mut content)
+            .map_err(|e| e.to_string())?;
         serde_json::from_str(&content).map_err(|e| e.to_string())
     }
 
@@ -274,6 +289,7 @@ impl StorageManager {
                                     updated_at: chat.updated_at,
                                     message_count: msg_count,
                                     last_message_preview: preview,
+                                    group_id: chat.group_id,
                                 });
                             }
                         }
@@ -281,8 +297,111 @@ impl StorageManager {
                 }
             }
         }
-        summaries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        summaries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(summaries)
+    }
+
+    pub fn list_chats_for_group(&self, group_id: &str) -> Result<Vec<ChatSummary>, String> {
+        let mut summaries = Vec::new();
+        if let Ok(entries) = fs::read_dir(self.chats_dir()) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        if let Ok(chat) = serde_json::from_str::<ChatTree>(&content) {
+                            if chat.group_id.as_deref() == Some(group_id) {
+                                let (msg_count, preview) = {
+                                    let active_path = chat.get_active_path();
+                                    let count = active_path.len();
+                                    let prev = active_path
+                                        .last()
+                                        .map(|m| {
+                                            let c = m.content.chars().take(80).collect::<String>();
+                                            if m.content.chars().count() > 80 {
+                                                format!("{c}...")
+                                            } else {
+                                                c
+                                            }
+                                        })
+                                        .unwrap_or_else(|| "Empty chat".to_string());
+                                    (count, prev)
+                                };
+
+                                summaries.push(ChatSummary {
+                                    id: chat.id.to_string(),
+                                    character_id: chat.character_id,
+                                    title: chat.title,
+                                    created_at: chat.created_at,
+                                    updated_at: chat.updated_at,
+                                    message_count: msg_count,
+                                    last_message_preview: preview,
+                                    group_id: chat.group_id,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        summaries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
+        Ok(summaries)
+    }
+
+    // --- Groups ---
+
+    pub fn save_group(&self, group: &Group) -> Result<(), String> {
+        let path = self.groups_dir().join(format!("{}.json", group.id));
+        let data = serde_json::to_string_pretty(group).map_err(|e| e.to_string())?;
+        fs::write(path, data).map_err(|e| e.to_string())?;
+        if let Ok(doc) = self.load_crdt_doc() {
+            let _ = doc.set_group(group);
+            let _ = self.save_crdt_doc(&doc);
+        }
+        Ok(())
+    }
+
+    pub fn load_group(&self, id: &str) -> Result<Group, String> {
+        let path = self.groups_dir().join(format!("{id}.json"));
+        let mut file = File::open(path).map_err(|e| e.to_string())?;
+        let mut content = String::new();
+        file.read_to_string(&mut content)
+            .map_err(|e| e.to_string())?;
+        serde_json::from_str(&content).map_err(|e| e.to_string())
+    }
+
+    pub fn list_groups(&self) -> Result<Vec<Group>, String> {
+        let mut groups = Vec::new();
+        if let Ok(entries) = fs::read_dir(self.groups_dir()) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("json") {
+                    if let Ok(content) = fs::read_to_string(&path) {
+                        if let Ok(group) = serde_json::from_str::<Group>(&content) {
+                            groups.push(group);
+                        }
+                    }
+                }
+            }
+        }
+        groups.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
+        Ok(groups)
+    }
+
+    pub fn delete_group(&self, id: &str) -> Result<(), String> {
+        let path = self.groups_dir().join(format!("{id}.json"));
+        if path.exists() {
+            fs::remove_file(path).map_err(|e| e.to_string())?;
+        }
+        if let Ok(doc) = self.load_crdt_doc() {
+            let _ = doc.delete_group(id);
+            let _ = self.save_crdt_doc(&doc);
+        }
+        if let Ok(chats) = self.list_chats_for_group(id) {
+            for chat in chats {
+                let _ = self.delete_chat(&chat.id);
+            }
+        }
+        Ok(())
     }
 
     pub fn delete_chat(&self, id: &str) -> Result<(), String> {
@@ -297,6 +416,61 @@ impl StorageManager {
             }
         }
         Ok(())
+    }
+    pub fn import_chat_jsonl(
+        &self,
+        file_bytes: &[u8],
+        target_character_id: Option<&str>,
+        title: Option<&str>,
+    ) -> Result<ChatTree, String> {
+        let content = std::str::from_utf8(file_bytes)
+            .map_err(|e| format!("Invalid UTF-8 encoding in chat file: {e}"))?;
+
+        // If target_character_id is not specified, attempt to infer from character name or list
+        let char_id = if let Some(id) = target_character_id {
+            id.to_string()
+        } else {
+            let first_line = content.lines().next().unwrap_or("").trim();
+            let matched_id = if let Ok(val) = serde_json::from_str::<serde_json::Value>(first_line)
+            {
+                if let Some(char_name) = val.get("character_name").and_then(|v| v.as_str()) {
+                    if let Ok(characters) = self.list_characters() {
+                        characters
+                            .into_iter()
+                            .find(|c| c.card.data.name.eq_ignore_ascii_case(char_name))
+                            .map(|c| c.id)
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            matched_id
+                .or_else(|| {
+                    self.list_characters()
+                        .ok()
+                        .and_then(|chars| chars.into_iter().next().map(|c| c.id))
+                })
+                .unwrap_or_else(|| "default".to_string())
+        };
+
+        let tree = import_sillytavern_chat_jsonl(content, &char_id, title)?;
+        self.save_chat(&tree)?;
+        Ok(tree)
+    }
+
+    pub fn export_chat_jsonl(
+        &self,
+        chat_id: &str,
+        user_name: &str,
+        character_name: &str,
+    ) -> Result<String, String> {
+        let chat = self.load_chat(chat_id)?;
+        export_sillytavern_chat_jsonl(&chat, user_name, character_name)
     }
 
     // --- Settings ---
@@ -334,7 +508,8 @@ impl StorageManager {
         let path = self.personas_dir().join(format!("{id}.json"));
         let mut file = File::open(path).map_err(|e| e.to_string())?;
         let mut content = String::new();
-        file.read_to_string(&mut content).map_err(|e| e.to_string())?;
+        file.read_to_string(&mut content)
+            .map_err(|e| e.to_string())?;
         serde_json::from_str(&content).map_err(|e| e.to_string())
     }
 
@@ -389,7 +564,8 @@ impl StorageManager {
         let path = self.lorebooks_dir().join(format!("{id}.json"));
         let mut file = File::open(path).map_err(|e| e.to_string())?;
         let mut content = String::new();
-        file.read_to_string(&mut content).map_err(|e| e.to_string())?;
+        file.read_to_string(&mut content)
+            .map_err(|e| e.to_string())?;
         serde_json::from_str(&content).map_err(|e| e.to_string())
     }
 
@@ -407,7 +583,7 @@ impl StorageManager {
                 }
             }
         }
-        lorebooks.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        lorebooks.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(lorebooks)
     }
 
@@ -483,6 +659,11 @@ impl StorageManager {
         if let Ok(lorebooks) = self.list_lorebooks() {
             for b in lorebooks {
                 let _ = doc.set_lorebook(&b);
+            }
+        }
+        if let Ok(groups) = self.list_groups() {
+            for g in groups {
+                let _ = doc.set_group(&g);
             }
         }
         doc.commit();
@@ -593,8 +774,34 @@ impl StorageManager {
             }
         }
 
+        // 5. Groups
+        if let Ok(groups) = doc.get_groups() {
+            for g in groups {
+                let tomb_key = format!("group:{}", g.id);
+                if let Some(tomb) = tombstones.get(&tomb_key) {
+                    if tomb.deleted_at >= g.updated_at {
+                        let path = self.groups_dir().join(format!("{}.json", g.id));
+                        if path.exists() {
+                            let _ = fs::remove_file(path);
+                        }
+                        continue;
+                    }
+                }
+                let should_write = match self.load_group(&g.id) {
+                    Ok(existing) => g.updated_at > existing.updated_at,
+                    Err(_) => true,
+                };
+                if should_write {
+                    let path = self.groups_dir().join(format!("{}.json", g.id));
+                    if let Ok(data) = serde_json::to_string_pretty(&g) {
+                        let _ = fs::write(path, data);
+                    }
+                }
+            }
+        }
+
         // Also sweep any local files matching active tombstones
-        for (key, _) in &tombstones {
+        for key in tombstones.keys() {
             if let Some(id) = key.strip_prefix("character:") {
                 let p = self.characters_dir().join(format!("{id}.json"));
                 if p.exists() {
@@ -612,6 +819,11 @@ impl StorageManager {
                 }
             } else if let Some(id) = key.strip_prefix("lorebook:") {
                 let p = self.lorebooks_dir().join(format!("{id}.json"));
+                if p.exists() {
+                    let _ = fs::remove_file(p);
+                }
+            } else if let Some(id) = key.strip_prefix("group:") {
+                let p = self.groups_dir().join(format!("{id}.json"));
                 if p.exists() {
                     let _ = fs::remove_file(p);
                 }

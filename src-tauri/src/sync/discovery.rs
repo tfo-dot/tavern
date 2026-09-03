@@ -130,7 +130,9 @@ pub async fn scan_lan_peers(
         match tokio::time::timeout(remaining, socket.recv_from(&mut buf)).await {
             Ok(Ok((len, peer_addr))) => {
                 if let Ok(msg) = serde_json::from_slice::<BeaconMessage>(&buf[..len]) {
-                    if (msg.kind == "announce" || msg.kind == "probe") && msg.device_id != local_device_id {
+                    if (msg.kind == "announce" || msg.kind == "probe")
+                        && msg.device_id != local_device_id
+                    {
                         let ip_str = peer_addr.ip().to_string();
                         let target_addr = format!("{}:{}", ip_str, msg.port);
                         let epoch_now = SystemTime::now()

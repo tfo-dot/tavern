@@ -1,24 +1,30 @@
 <script lang="ts">
-  import type { MessageViewNode } from '../types';
+  import type { Character, MessageViewNode } from '../types';
   import { formatMessageContent } from '../formatter';
 
   export let message: MessageViewNode;
+  export let characters: Character[] = [];
   export let characterName = 'Character';
   export let characterAvatar: string | null = null;
   export let userName = 'You';
   export let userAvatar: string | null = null;
   export let isGenerating = false;
   export let isLastMessage = false;
+  export let isGroupChat = false;
 
   export let onSwipe: (parentId: string | null, newIndex: number) => void;
   export let onRegenerateSwipe: () => void;
   export let onEdit: (id: string, newContent: string) => void;
   export let onDelete: (id: string) => void;
   export let onOpenImage: ((src: string, alt: string) => void) | undefined = undefined;
+  export let onContinue: (() => void) | undefined = undefined;
+  export let onSetSpeaker: ((messageId: string, characterId: string | null, name: string | null) => void) | undefined = undefined;
+  export let continuingText: string = '';
 
   let isEditing = false;
   let editDraft = '';
   let copied = false;
+  let isChangingSpeaker = false;
 
   // Touch Swipe Gesture State
   let touchStartX = 0;
@@ -27,12 +33,33 @@
   let touchCurrentY = 0;
   let isDragging = false;
   let offsetX = 0;
-  $: isUser = message.role === 'User';
-  $: displayName = isUser ? userName : characterName;
-  $: avatarSrc = isUser ? userAvatar : characterAvatar;
-  $: initials = displayName.slice(0, 2).toUpperCase();
-  $: formattedHtml = formatMessageContent(message.content, characterName, userName);
 
+  $: isUser = message.role === 'User';
+  $: matchedChar = (!isUser && message.character_id)
+    ? characters.find((c) => c.id === message.character_id)
+    : (!isUser && message.name)
+    ? characters.find((c) => c.card.data.name.toLowerCase() === message.name?.toLowerCase())
+    : null;
+
+  $: displayName = isUser
+    ? userName
+    : matchedChar?.card.data.name || message.name || characterName;
+
+  $: avatarSrc = isUser
+    ? userAvatar
+    : matchedChar?.avatar_data_url || characterAvatar;
+
+  $: initials = displayName.slice(0, 2).toUpperCase();
+  $: displayContent = message.content + (continuingText || '');
+  $: formattedHtml = formatMessageContent(displayContent, displayName, userName);
+
+  function handleSelectSpeaker(charId: string) {
+    const ch = characters.find((c) => c.id === charId);
+    if (ch && onSetSpeaker) {
+      onSetSpeaker(message.id, ch.id, ch.card.data.name);
+    }
+    isChangingSpeaker = false;
+  }
   function startEdit() {
     editDraft = message.content;
     isEditing = true;
@@ -174,11 +201,45 @@
   <div class="message-content-col">
     <!-- Header -->
     <div class="message-header">
-      <span class="sender-name">{displayName}</span>
+      {#if isGroupChat && !isUser && characters.length > 0 && onSetSpeaker}
+        <div class="speaker-selector-container">
+          <button
+            type="button"
+            class="sender-name-btn"
+            on:click={() => (isChangingSpeaker = !isChangingSpeaker)}
+            title="Click to reassign speaker"
+          >
+            <span class="sender-name">{displayName}</span>
+            <span class="dropdown-caret">▾</span>
+          </button>
+
+          {#if isChangingSpeaker}
+            <!-- svelte-ignore a11y_click_events_have_key_events -->
+            <div class="speaker-dropdown" on:click|stopPropagation role="menu" tabindex="-1">
+              <span class="dropdown-header">Reassign Speaker:</span>
+              {#each characters as ch}
+                <button
+                  type="button"
+                  class="dropdown-item {ch.id === (message.character_id || matchedChar?.id) ? 'active' : ''}"
+                  on:click={() => handleSelectSpeaker(ch.id)}
+                >
+                  {#if ch.avatar_data_url}
+                    <img src={ch.avatar_data_url} alt={ch.card.data.name} class="item-avatar" />
+                  {:else}
+                    <span class="item-avatar-init">{ch.card.data.name.slice(0, 2).toUpperCase()}</span>
+                  {/if}
+                  <span>{ch.card.data.name}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {:else}
+        <span class="sender-name">{displayName}</span>
+      {/if}
       <span class="role-badge {isUser ? 'badge-user' : 'badge-assistant'}">
         {isUser ? 'User' : 'Character'}
       </span>
-
       <!-- Swipe Pagination if multiple branches exist -->
       {#if !isUser && message.sibling_total > 1}
         <div class="swipe-controls">
@@ -207,6 +268,14 @@
       <!-- Message Actions Toolbar -->
       <div class="message-actions">
         {#if !isUser && isLastMessage}
+          <button
+            class="action-icon-btn continue-btn"
+            disabled={isGenerating}
+            on:click={() => onContinue && onContinue()}
+            title="Continue AI message generation"
+          >
+            ▶ Continue
+          </button>
           <button
             class="action-icon-btn swipe-new-btn"
             disabled={isGenerating}
@@ -464,6 +533,18 @@
     color: #f5c2e7;
   }
 
+  .continue-btn {
+    background: rgba(137, 180, 250, 0.15);
+    border-color: rgba(137, 180, 250, 0.4);
+    color: #89b4fa;
+    font-weight: 600;
+  }
+
+  .continue-btn:hover:not(:disabled) {
+    background: rgba(137, 180, 250, 0.3);
+    color: #b4befe;
+  }
+
   .delete-btn:hover {
     color: #f38ba8;
     border-color: #f38ba8;
@@ -605,6 +686,100 @@
     font-size: 0.85rem;
   }
 
+
+  .speaker-selector-container {
+    position: relative;
+    display: inline-block;
+  }
+
+  .sender-name-btn {
+    background: transparent;
+    border: none;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    cursor: pointer;
+    color: inherit;
+  }
+
+  .sender-name-btn:hover .sender-name {
+    color: #cba6f7;
+  }
+
+  .dropdown-caret {
+    font-size: 0.7rem;
+    color: #a6adc8;
+  }
+
+  .speaker-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    background: #181825;
+    border: 1px solid #313244;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    padding: 0.4rem;
+    z-index: 100;
+    min-width: 180px;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .dropdown-header {
+    font-size: 0.72rem;
+    font-weight: 700;
+    color: #a6adc8;
+    padding: 0.2rem 0.4rem;
+    text-transform: uppercase;
+  }
+
+  .dropdown-item {
+    background: transparent;
+    border: none;
+    border-radius: 6px;
+    color: #cdd6f4;
+    font-size: 0.82rem;
+    padding: 0.35rem 0.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.15s;
+  }
+
+  .dropdown-item:hover {
+    background: #313244;
+  }
+
+  .dropdown-item.active {
+    background: rgba(203, 166, 247, 0.15);
+    color: #cba6f7;
+    font-weight: 600;
+  }
+
+  .item-avatar {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    object-fit: cover;
+  }
+
+  .item-avatar-init {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #313244;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.6rem;
+    color: #cdd6f4;
+    font-weight: 700;
+  }
   @media (max-width: 640px) {
     .message-wrapper {
       padding: 0.75rem 0.7rem;
@@ -649,7 +824,8 @@
       gap: 0.25rem;
     }
 
-    .swipe-new-btn {
+    .swipe-new-btn,
+    .continue-btn {
       display: none;
     }
     .action-icon-btn {

@@ -1,7 +1,7 @@
+use crate::lorebook::CharacterBook;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
-use crate::lorebook::CharacterBook;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CharacterCardV2 {
     pub spec: String,         // "chara_card_v2"

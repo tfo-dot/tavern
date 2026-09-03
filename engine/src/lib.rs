@@ -1,11 +1,11 @@
 pub mod character;
-pub mod parser;
 pub mod chat;
-pub mod llm;
-pub mod template;
-pub mod prompt;
-pub mod lorebook;
 pub mod crdt;
+pub mod llm;
+pub mod lorebook;
+pub mod parser;
+pub mod prompt;
+pub mod template;
 
 #[cfg(test)]
 mod tests {
@@ -13,7 +13,7 @@ mod tests {
     use character::{CharacterCardV2, CharacterData, UserPersona};
     use chat::{AuthorRole, ChatTree};
     use parser::{export_character_png, parse_character_card};
-    use prompt::{build_chat_prompt, PromptConfig};
+    use prompt::{PromptConfig, build_chat_prompt};
 
     #[test]
     fn test_character_png_roundtrip() {
@@ -34,16 +34,25 @@ mod tests {
     #[test]
     fn test_chat_tree_swipes_and_edits() {
         let mut tree = ChatTree::new("char_1".to_string(), "Adventure".to_string());
-        
+
         // Root greeting
         let m1 = tree.append_message(AuthorRole::Assistant, "Hello {{user}}!".to_string(), None);
         // User reply
         let m2 = tree.append_message(AuthorRole::User, "Hello {{char}}!".to_string(), Some(m1));
         // Assistant reply variation 1
-        let a1 = tree.append_message(AuthorRole::Assistant, "Nice to meet you.".to_string(), Some(m2));
-        
+        let a1 = tree.append_message(
+            AuthorRole::Assistant,
+            "Nice to meet you.".to_string(),
+            Some(m2),
+        );
+
         // Swipe: variation 2
-        let a2 = tree.add_swipe(Some(m2), "A pleasure to make your acquaintance.".to_string()).unwrap();
+        let a2 = tree
+            .add_swipe(
+                Some(m2),
+                "A pleasure to make your acquaintance.".to_string(),
+            )
+            .unwrap();
 
         let view_nodes = tree.get_active_view_nodes();
         assert_eq!(view_nodes.len(), 3);
@@ -61,7 +70,8 @@ mod tests {
         assert_eq!(view_nodes2[2].sibling_index, 0);
 
         // Edit variation 1
-        tree.edit_message(a1, "Edited response.".to_string()).unwrap();
+        tree.edit_message(a1, "Edited response.".to_string())
+            .unwrap();
         let view_nodes3 = tree.get_active_view_nodes();
         assert_eq!(view_nodes3[2].content, "Edited response.");
 
@@ -71,6 +81,30 @@ mod tests {
         assert_eq!(view_nodes4.len(), 3);
         assert_eq!(view_nodes4[2].id, a2);
         assert_eq!(view_nodes4[2].sibling_total, 1);
+    }
+
+    #[test]
+    fn test_chat_tree_append_to_message_continuation() {
+        let mut tree = ChatTree::new("char_1".to_string(), "Continuation Test".to_string());
+        let m1 = tree.append_message(AuthorRole::Assistant, "Once upon a time,".to_string(), None);
+        assert!(
+            tree.append_to_message(m1, " in a kingdom far away,")
+                .is_ok()
+        );
+        assert!(
+            tree.append_to_message(m1, " there lived a wise mage.")
+                .is_ok()
+        );
+
+        let nodes = tree.get_active_view_nodes();
+        assert_eq!(nodes.len(), 1);
+        assert_eq!(
+            nodes[0].content,
+            "Once upon a time, in a kingdom far away, there lived a wise mage."
+        );
+
+        let fake_id = uuid::Uuid::new_v4();
+        assert!(tree.append_to_message(fake_id, "test").is_err());
     }
 
     #[test]
@@ -89,7 +123,11 @@ mod tests {
         };
 
         let mut tree = ChatTree::new("alice".to_string(), "Chat 1".to_string());
-        let m1 = tree.append_message(AuthorRole::Assistant, "Look at this bloom, Bob!".to_string(), None);
+        let m1 = tree.append_message(
+            AuthorRole::Assistant,
+            "Look at this bloom, Bob!".to_string(),
+            None,
+        );
         tree.append_message(AuthorRole::User, "Is it dangerous?".to_string(), Some(m1));
 
         let config = PromptConfig::default();
@@ -104,8 +142,45 @@ mod tests {
     }
 
     #[test]
+    fn test_prompt_assembly_with_trailing_assistant_and_post_history() {
+        let mut data = CharacterData::default();
+        data.name = "Alice".to_string();
+        data.post_history_instructions =
+            "[Instruction: continue the scene in vivid prose]".to_string();
+
+        let user = UserPersona::default();
+        let mut tree = ChatTree::new("alice".to_string(), "Chat 1".to_string());
+        let m1 = tree.append_message(AuthorRole::Assistant, "Greetings!".to_string(), None);
+        let m2 = tree.append_message(AuthorRole::User, "Tell me a tale.".to_string(), Some(m1));
+        let _m3 = tree.append_message(
+            AuthorRole::Assistant,
+            "Once upon a time...".to_string(),
+            Some(m2),
+        );
+
+        let config = PromptConfig::default();
+        let prompt_messages = build_chat_prompt(&data, &user, &tree, &config);
+
+        // The trailing message must remain assistant for continuation / completion
+        let last_msg = prompt_messages.last().unwrap();
+        assert_eq!(last_msg.role, "assistant");
+        assert_eq!(last_msg.content, "Once upon a time...");
+
+        // The post-history instruction should be present before the assistant message
+        let second_to_last = &prompt_messages[prompt_messages.len() - 2];
+        assert_eq!(second_to_last.role, "system");
+        assert_eq!(
+            second_to_last.content,
+            "[Instruction: continue the scene in vivid prose]"
+        );
+    }
+
+    #[test]
     fn test_lorebook_activation_and_selective_logic() {
-        use lorebook::{Lorebook, LorebookEntry, SelectiveLogic, scan_lorebooks_for_activation, LorebookPosition};
+        use lorebook::{
+            Lorebook, LorebookEntry, LorebookPosition, SelectiveLogic,
+            scan_lorebooks_for_activation,
+        };
 
         let mut book = Lorebook::new("World Lore".to_string(), "Lore of the realm".to_string());
         book.scan_depth = 3;
@@ -149,22 +224,32 @@ mod tests {
         let activated = scan_lorebooks_for_activation(&[&book], &messages, "");
         let comments: Vec<&str> = activated.iter().map(|e| e.comment.as_str()).collect();
 
-        assert!(comments.contains(&"World Name"), "Constant entry should activate");
-        assert!(comments.contains(&"Tavern History"), "Tavern key should match");
-        assert!(!comments.contains(&"Dragon Blade"), "Dragon Blade should NOT match because 'flame' is missing");
+        assert!(
+            comments.contains(&"World Name"),
+            "Constant entry should activate"
+        );
+        assert!(
+            comments.contains(&"Tavern History"),
+            "Tavern key should match"
+        );
+        assert!(
+            !comments.contains(&"Dragon Blade"),
+            "Dragon Blade should NOT match because 'flame' is missing"
+        );
 
         // Now test when both dragon and flame are present
-        let messages2 = vec![
-            "I strike with the sword of dragon flame!".to_string(),
-        ];
+        let messages2 = vec!["I strike with the sword of dragon flame!".to_string()];
         let activated2 = scan_lorebooks_for_activation(&[&book], &messages2, "");
         let comments2: Vec<&str> = activated2.iter().map(|e| e.comment.as_str()).collect();
-        assert!(comments2.contains(&"Dragon Blade"), "Dragon Blade should match when all secondary keys present");
+        assert!(
+            comments2.contains(&"Dragon Blade"),
+            "Dragon Blade should match when all secondary keys present"
+        );
     }
 
     #[test]
     fn test_lorebook_recursive_scanning() {
-        use lorebook::{Lorebook, LorebookEntry, scan_lorebooks_for_activation, LorebookPosition};
+        use lorebook::{Lorebook, LorebookEntry, LorebookPosition, scan_lorebooks_for_activation};
 
         let mut book = Lorebook::new("Magic Lore".to_string(), "Lore".to_string());
         book.recursive_scanning = true;
@@ -190,7 +275,10 @@ mod tests {
         let comments: Vec<&str> = activated.iter().map(|e| e.comment.as_str()).collect();
 
         assert!(comments.contains(&"Crystal"));
-        assert!(comments.contains(&"Order"), "Order should be activated via recursive scanning");
+        assert!(
+            comments.contains(&"Order"),
+            "Order should be activated via recursive scanning"
+        );
     }
 
     #[test]
@@ -261,7 +349,10 @@ mod tests {
         let (parsed_card, _) = parse_character_card(&png_bytes).expect("failed to parse png");
 
         assert_eq!(parsed_card.data.name, "Eldrin");
-        let parsed_book = parsed_card.data.character_book.expect("embedded book missing");
+        let parsed_book = parsed_card
+            .data
+            .character_book
+            .expect("embedded book missing");
         assert_eq!(parsed_book.entries.len(), 1);
         assert_eq!(parsed_book.entries[0].comment, "Staff");
         assert_eq!(parsed_book.entries[0].keys, vec!["staff"]);
@@ -280,8 +371,16 @@ mod tests {
         let user = UserPersona::default();
         let mut tree = ChatTree::new("char1".to_string(), "Chat 1".to_string());
         let m1 = tree.append_message(AuthorRole::Assistant, "Greetings!".to_string(), None);
-        let m2 = tree.append_message(AuthorRole::User, "Tell me about the magic tower.".to_string(), Some(m1));
-        tree.append_message(AuthorRole::Assistant, "The tower is high.".to_string(), Some(m2));
+        let m2 = tree.append_message(
+            AuthorRole::User,
+            "Tell me about the magic tower.".to_string(),
+            Some(m1),
+        );
+        tree.append_message(
+            AuthorRole::Assistant,
+            "The tower is high.".to_string(),
+            Some(m2),
+        );
 
         let mut book = Lorebook::new("World".to_string(), "".to_string());
         book.add_entry(LorebookEntry {
@@ -304,8 +403,13 @@ mod tests {
         // Verify system message has before_char content
         assert!(msgs[0].content.contains("THE_TOWER_LORE_BEFORE_CHAR"));
         // Verify at_depth content was inserted in history
-        let at_depth_found = msgs.iter().any(|m| m.content.contains("THE_TOWER_LORE_AT_DEPTH"));
-        assert!(at_depth_found, "At-depth entry should be inserted into history messages");
+        let at_depth_found = msgs
+            .iter()
+            .any(|m| m.content.contains("THE_TOWER_LORE_AT_DEPTH"));
+        assert!(
+            at_depth_found,
+            "At-depth entry should be inserted into history messages"
+        );
     }
     #[test]
     fn test_crdt_sync_roundtrip() {
@@ -332,7 +436,11 @@ mod tests {
         // Device B creates a chat and a lorebook
         let mut chat_b = ChatTree::new("char_1".to_string(), "Chat with Aria".to_string());
         let m1 = chat_b.append_message(AuthorRole::User, "Hello Aria!".to_string(), None);
-        chat_b.append_message(AuthorRole::Assistant, "Greetings traveler!".to_string(), Some(m1));
+        chat_b.append_message(
+            AuthorRole::Assistant,
+            "Greetings traveler!".to_string(),
+            Some(m1),
+        );
         doc_b.set_chat(&chat_b).unwrap();
 
         let mut book_b = Lorebook::default();
@@ -376,5 +484,105 @@ mod tests {
 
         assert_eq!(doc_a.get_personas().unwrap().len(), 0);
         assert_eq!(doc_b.get_personas().unwrap().len(), 0);
+    }
+    #[test]
+    fn test_sillytavern_chat_jsonl_import_and_export() {
+        use chat::{export_sillytavern_chat_jsonl, import_sillytavern_chat_jsonl};
+
+        let jsonl_sample = r#"{"user_name":"Alex","character_name":"Seraphina","create_date":"2026-09-01 @18h 00m 00s 000ms","chat_metadata":{}}
+{"name":"Seraphina","is_user":false,"is_name":true,"send_date":"2026-09-01 @18h 00m 00s 000ms","mes":"Greetings traveler!","swipes":["Welcome to my hearth!","Greetings traveler!"],"swipe_id":1}
+{"name":"Alex","is_user":true,"is_name":true,"send_date":"2026-09-01 @18h 01m 00s 000ms","mes":"Hello Seraphina. Can you tell me about the ancient ruins?","swipes":["Hello Seraphina. Can you tell me about the ancient ruins?"],"swipe_id":0}
+{"name":"Seraphina","is_user":false,"is_name":true,"send_date":"2026-09-01 @18h 02m 00s 000ms","mes":"The ruins are guarded by arcane spirits.","swipes":["The ruins lie to the north.","The ruins are guarded by arcane spirits.","Beware the shadows in the ruins."],"swipe_id":1}"#;
+
+        let imported_tree = import_sillytavern_chat_jsonl(jsonl_sample, "char_seraphina", None)
+            .expect("Failed to import SillyTavern chat JSONL");
+
+        assert_eq!(imported_tree.character_id, "char_seraphina");
+        assert_eq!(imported_tree.title, "Chat with Seraphina");
+        assert_eq!(imported_tree.root_message_ids.len(), 2);
+        assert_eq!(imported_tree.active_root_index, 1);
+
+        let view_nodes = imported_tree.get_active_view_nodes();
+        assert_eq!(view_nodes.len(), 3);
+
+        // Turn 0: Greeting (second swipe active)
+        assert_eq!(view_nodes[0].role, AuthorRole::Assistant);
+        assert_eq!(view_nodes[0].content, "Greetings traveler!");
+        assert_eq!(view_nodes[0].sibling_index, 1);
+        assert_eq!(view_nodes[0].sibling_total, 2);
+        assert!(view_nodes[0].can_swipe_left);
+        assert!(!view_nodes[0].can_swipe_right);
+
+        // Turn 1: User message
+        assert_eq!(view_nodes[1].role, AuthorRole::User);
+        assert_eq!(
+            view_nodes[1].content,
+            "Hello Seraphina. Can you tell me about the ancient ruins?"
+        );
+        assert_eq!(view_nodes[1].sibling_index, 0);
+        assert_eq!(view_nodes[1].sibling_total, 1);
+
+        // Turn 2: Assistant reply (second swipe active)
+        assert_eq!(view_nodes[2].role, AuthorRole::Assistant);
+        assert_eq!(
+            view_nodes[2].content,
+            "The ruins are guarded by arcane spirits."
+        );
+        assert_eq!(view_nodes[2].sibling_index, 1);
+        assert_eq!(view_nodes[2].sibling_total, 3);
+        assert!(view_nodes[2].can_swipe_left);
+        assert!(view_nodes[2].can_swipe_right);
+
+        // Export back to SillyTavern JSONL
+        let exported_jsonl = export_sillytavern_chat_jsonl(&imported_tree, "Alex", "Seraphina")
+            .expect("Failed to export chat to JSONL");
+
+        let exported_lines: Vec<&str> = exported_jsonl.lines().collect();
+        assert_eq!(exported_lines.len(), 4);
+
+        // Re-import to confirm lossless roundtrip
+        let reimported =
+            import_sillytavern_chat_jsonl(&exported_jsonl, "char_seraphina", Some("Custom Title"))
+                .expect("Failed to re-import exported JSONL");
+        assert_eq!(reimported.title, "Custom Title");
+        let reimported_views = reimported.get_active_view_nodes();
+        assert_eq!(reimported_views.len(), 3);
+        assert_eq!(reimported_views[0].content, "Greetings traveler!");
+        assert_eq!(reimported_views[0].sibling_total, 2);
+        assert_eq!(
+            reimported_views[2].content,
+            "The ruins are guarded by arcane spirits."
+        );
+        assert_eq!(reimported_views[2].sibling_total, 3);
+    }
+
+    #[test]
+    fn test_sillytavern_chat_formats_and_datetime_parsing() {
+        use chat::{import_sillytavern_chat_jsonl, parse_sillytavern_date};
+
+        // Test Date Parsing
+        let dt1 = parse_sillytavern_date("2026-09-01 @18h 00m 00s 123ms").unwrap();
+        assert_eq!(dt1.to_rfc3339(), "2026-09-01T18:00:00.123+00:00");
+
+        let dt2 = parse_sillytavern_date("2024-03-15 @14h 30m 45s").unwrap();
+        assert_eq!(dt2.to_rfc3339(), "2024-03-15T14:30:45+00:00");
+
+        let dt3 = parse_sillytavern_date("2026-09-01T12:00:00Z").unwrap();
+        assert_eq!(dt3.to_rfc3339(), "2026-09-01T12:00:00+00:00");
+
+        // Test JSON Array format with system message
+        let json_array_sample = r#"[
+            {"name":"System","is_user":false,"is_system":true,"mes":"Roleplay starts in a dungeon."},
+            {"name":"User","is_user":true,"mes":"I light a torch."}
+        ]"#;
+
+        let tree = import_sillytavern_chat_jsonl(json_array_sample, "dungeon_char", None)
+            .expect("Failed to import JSON array chat");
+        let views = tree.get_active_view_nodes();
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0].role, AuthorRole::System);
+        assert_eq!(views[0].content, "Roleplay starts in a dungeon.");
+        assert_eq!(views[1].role, AuthorRole::User);
+        assert_eq!(views[1].content, "I light a torch.");
     }
 }

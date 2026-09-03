@@ -33,7 +33,9 @@ impl LorebookPosition {
         match s.trim().to_lowercase().as_str() {
             "before_char" | "before_character" | "before_character_defs" | "0" => Self::BeforeChar,
             "after_char" | "after_character" | "after_character_defs" | "1" => Self::AfterChar,
-            "before_scenario" | "before_scenario_defs" | "before_prompt" | "2" => Self::BeforeScenario,
+            "before_scenario" | "before_scenario_defs" | "before_prompt" | "2" => {
+                Self::BeforeScenario
+            }
             "after_scenario" | "after_scenario_defs" | "after_prompt" | "3" => Self::AfterScenario,
             "top_system" | "top_of_system" | "system_top" | "4" => Self::TopSystem,
             "bottom_system" | "bottom_of_system" | "system_bottom" | "5" => Self::BottomSystem,
@@ -114,7 +116,8 @@ impl<'de> Deserialize<'de> for LorebookEntry {
         D: Deserializer<'de>,
     {
         let val = serde_json::Value::deserialize(deserializer)?;
-        parse_single_entry(&val).ok_or_else(|| serde::de::Error::custom("invalid lorebook entry object"))
+        parse_single_entry(&val)
+            .ok_or_else(|| serde::de::Error::custom("invalid lorebook entry object"))
     }
 }
 impl Default for LorebookEntry {
@@ -192,10 +195,11 @@ impl Default for Lorebook {
 
 impl Lorebook {
     pub fn new(name: String, description: String) -> Self {
-        let mut book = Self::default();
-        book.name = name;
-        book.description = description;
-        book
+        Self {
+            name,
+            description,
+            ..Default::default()
+        }
     }
 
     pub fn add_entry(&mut self, mut entry: LorebookEntry) -> String {
@@ -248,13 +252,29 @@ impl<'de> Deserialize<'de> for CharacterBook {
         let val = serde_json::Value::deserialize(deserializer)?;
         let obj = match val.as_object() {
             Some(map) => map,
-            None => return Err(serde::de::Error::custom("expected object for character_book")),
+            None => {
+                return Err(serde::de::Error::custom(
+                    "expected object for character_book",
+                ));
+            }
         };
 
-        let name = obj.get("name").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let description = obj.get("description").and_then(|v| v.as_str()).map(|s| s.to_string());
-        let scan_depth = obj.get("scan_depth").and_then(|v| v.as_u64()).map(|n| n as usize);
-        let token_budget = obj.get("token_budget").and_then(|v| v.as_u64()).map(|n| n as usize);
+        let name = obj
+            .get("name")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let description = obj
+            .get("description")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        let scan_depth = obj
+            .get("scan_depth")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
+        let token_budget = obj
+            .get("token_budget")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize);
         let recursive_scanning = obj.get("recursive_scanning").and_then(|v| v.as_bool());
 
         let mut entries = Vec::new();
@@ -271,10 +291,10 @@ impl<'de> Deserialize<'de> for CharacterBook {
                     let mut sorted_keys: Vec<_> = map.keys().collect();
                     sorted_keys.sort_by_key(|k| k.parse::<i64>().unwrap_or(0));
                     for k in sorted_keys {
-                        if let Some(item) = map.get(k) {
-                            if let Some(entry) = parse_single_entry(item) {
-                                entries.push(entry);
-                            }
+                        if let Some(item) = map.get(k)
+                            && let Some(entry) = parse_single_entry(item)
+                        {
+                            entries.push(entry);
                         }
                     }
                 }
@@ -304,7 +324,10 @@ impl CharacterBook {
         let now = Utc::now();
         Lorebook {
             id: Uuid::new_v4().to_string(),
-            name: self.name.clone().unwrap_or_else(|| "Character Lorebook".to_string()),
+            name: self
+                .name
+                .clone()
+                .unwrap_or_else(|| "Character Lorebook".to_string()),
             description: self.description.clone().unwrap_or_default(),
             scan_depth: self.scan_depth.unwrap_or(2),
             token_budget: self.token_budget.unwrap_or(2048),
@@ -344,31 +367,31 @@ fn extract_string_list(val: Option<&serde_json::Value>) -> Vec<String> {
 /// SillyTavern World Info JSON export (with array or object entries), or character PNG containing a book.
 pub fn parse_lorebook(bytes: &[u8]) -> Result<Lorebook, LorebookError> {
     // If PNG, check if character card has embedded character_book
-    if bytes.len() >= 8 && &bytes[0..8] == b"\x89PNG\r\n\x1a\n" {
-        if let Ok((card, _)) = crate::parser::parse_character_card(bytes) {
-            if let Some(book) = card.data.character_book {
-                let mut lorebook = book.to_lorebook();
-                if lorebook.name == "Character Lorebook" && !card.data.name.is_empty() {
-                    lorebook.name = format!("{} Lorebook", card.data.name);
-                }
-                return Ok(lorebook);
-            }
+    if bytes.len() >= 8
+        && &bytes[0..8] == b"\x89PNG\r\n\x1a\n"
+        && let Ok((card, _)) = crate::parser::parse_character_card(bytes)
+        && let Some(book) = card.data.character_book
+    {
+        let mut lorebook = book.to_lorebook();
+        if lorebook.name == "Character Lorebook" && !card.data.name.is_empty() {
+            lorebook.name = format!("{} Lorebook", card.data.name);
         }
+        return Ok(lorebook);
     }
 
     let json_str = std::str::from_utf8(bytes)?;
     // First, try standard Lorebook deserialization
-    if let Ok(book) = serde_json::from_str::<Lorebook>(json_str) {
-        if !book.name.is_empty() || !book.entries.is_empty() {
-            return Ok(book);
-        }
+    if let Ok(book) = serde_json::from_str::<Lorebook>(json_str)
+        && (!book.name.is_empty() || !book.entries.is_empty())
+    {
+        return Ok(book);
     }
 
     // Next, check if it's a CharacterBook
-    if let Ok(char_book) = serde_json::from_str::<CharacterBook>(json_str) {
-        if !char_book.entries.is_empty() || char_book.name.is_some() {
-            return Ok(char_book.to_lorebook());
-        }
+    if let Ok(char_book) = serde_json::from_str::<CharacterBook>(json_str)
+        && (!char_book.entries.is_empty() || char_book.name.is_some())
+    {
+        return Ok(char_book.to_lorebook());
     }
 
     // Generic JSON AST inspection for SillyTavern formats
@@ -379,7 +402,10 @@ pub fn parse_lorebook(bytes: &[u8]) -> Result<Lorebook, LorebookError> {
     };
 
     // If wrapped in "character_book" or "world_info"
-    let effective_obj = if let Some(serde_json::Value::Object(inner)) = root_obj.get("character_book").or_else(|| root_obj.get("world_info")) {
+    let effective_obj = if let Some(serde_json::Value::Object(inner)) = root_obj
+        .get("character_book")
+        .or_else(|| root_obj.get("world_info"))
+    {
         inner
     } else {
         root_obj
@@ -434,10 +460,10 @@ pub fn parse_lorebook(bytes: &[u8]) -> Result<Lorebook, LorebookError> {
                 let mut sorted_keys: Vec<_> = map.keys().collect();
                 sorted_keys.sort_by_key(|k| k.parse::<i64>().unwrap_or(0));
                 for k in sorted_keys {
-                    if let Some(item) = map.get(k) {
-                        if let Some(entry) = parse_single_entry(item) {
-                            entries.push(entry);
-                        }
+                    if let Some(item) = map.get(k)
+                        && let Some(entry) = parse_single_entry(item)
+                    {
+                        entries.push(entry);
                     }
                 }
             }
@@ -473,10 +499,8 @@ fn parse_single_entry(val: &serde_json::Value) -> Option<LorebookEntry> {
         .and_then(|v| {
             if let Some(s) = v.as_str() {
                 Some(s.to_string())
-            } else if let Some(n) = v.as_i64() {
-                Some(n.to_string())
             } else {
-                None
+                v.as_i64().map(|n| n.to_string())
             }
         })
         .unwrap_or_else(|| Uuid::new_v4().to_string());
@@ -485,7 +509,10 @@ fn parse_single_entry(val: &serde_json::Value) -> Option<LorebookEntry> {
     let keys = extract_string_list(obj.get("keys").or_else(|| obj.get("key")));
 
     // SillyTavern uses "secondary_keys" or "keysecondary"
-    let secondary_keys = extract_string_list(obj.get("secondary_keys").or_else(|| obj.get("keysecondary")));
+    let secondary_keys = extract_string_list(
+        obj.get("secondary_keys")
+            .or_else(|| obj.get("keysecondary")),
+    );
 
     let content = obj
         .get("content")
@@ -503,10 +530,8 @@ fn parse_single_entry(val: &serde_json::Value) -> Option<LorebookEntry> {
     // Enabled: in ST, "disable": true means disabled
     let enabled = if let Some(d) = obj.get("disable").and_then(|v| v.as_bool()) {
         !d
-    } else if let Some(e) = obj.get("enabled").and_then(|v| v.as_bool()) {
-        e
     } else {
-        true
+        obj.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true)
     };
 
     let constant = obj
@@ -540,7 +565,10 @@ fn parse_single_entry(val: &serde_json::Value) -> Option<LorebookEntry> {
         })
         .unwrap_or(SelectiveLogic::AndAny);
 
-    let position = if let Some(pos_val) = obj.get("position").or_else(|| obj.get("insertion_strategy")) {
+    let position = if let Some(pos_val) = obj
+        .get("position")
+        .or_else(|| obj.get("insertion_strategy"))
+    {
         if let Some(s) = pos_val.as_str() {
             LorebookPosition::from_str_loose(s)
         } else if let Some(n) = pos_val.as_i64() {
@@ -552,10 +580,7 @@ fn parse_single_entry(val: &serde_json::Value) -> Option<LorebookEntry> {
         LorebookPosition::BeforeChar
     };
 
-    let depth = obj
-        .get("depth")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(4) as usize;
+    let depth = obj.get("depth").and_then(|v| v.as_u64()).unwrap_or(4) as usize;
 
     let order = obj
         .get("order")
@@ -639,7 +664,10 @@ pub fn is_key_match(key: &str, text: &str, case_sensitive: bool, use_regex: bool
     // In SillyTavern, standard keyword matching checks for whole word boundary unless regex.
     let escaped_key = regex::escape(trimmed_key);
     // \b word boundary works well for alphanumeric keys; for keys with symbols or spaces, relaxed boundary is used
-    let pattern_str = if trimmed_key.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+    let pattern_str = if trimmed_key
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
         format!(r"\b{}\b", escaped_key)
     } else {
         escaped_key
@@ -679,9 +707,10 @@ pub fn evaluate_entry(entry: &LorebookEntry, scan_text: &str) -> bool {
     }
 
     // 1. Primary keys check: at least ONE primary key must match
-    let primary_matched = entry.keys.iter().any(|k| {
-        is_key_match(k, scan_text, entry.case_sensitive, entry.use_regex)
-    });
+    let primary_matched = entry
+        .keys
+        .iter()
+        .any(|k| is_key_match(k, scan_text, entry.case_sensitive, entry.use_regex));
 
     if !primary_matched {
         return false;
@@ -689,9 +718,11 @@ pub fn evaluate_entry(entry: &LorebookEntry, scan_text: &str) -> bool {
 
     // 2. Secondary keys check (if selective is enabled and secondary keys exist)
     if entry.selective && !entry.secondary_keys.is_empty() {
-        let matched_count = entry.secondary_keys.iter().filter(|k| {
-            is_key_match(k, scan_text, entry.case_sensitive, entry.use_regex)
-        }).count();
+        let matched_count = entry
+            .secondary_keys
+            .iter()
+            .filter(|k| is_key_match(k, scan_text, entry.case_sensitive, entry.use_regex))
+            .count();
         let total_count = entry.secondary_keys.len();
 
         match entry.selective_logic {
@@ -828,11 +859,9 @@ pub fn scan_lorebooks_for_activation(
             let mut found_new = false;
             for book in lorebooks {
                 for entry in &book.entries {
-                    if !activated_map.contains_key(&entry.id) {
-                        if evaluate_entry(entry, &new_text) {
-                            activated_map.insert(entry.id.clone(), (entry.clone(), book.token_budget));
-                            found_new = true;
-                        }
+                    if !activated_map.contains_key(&entry.id) && evaluate_entry(entry, &new_text) {
+                        activated_map.insert(entry.id.clone(), (entry.clone(), book.token_budget));
+                        found_new = true;
                     }
                 }
             }
@@ -864,7 +893,7 @@ pub fn scan_lorebooks_for_activation(
         let mut current_tokens = 0;
         let mut budgeted_result = Vec::new();
         for item in result {
-            let tokens = (item.content.chars().count() + 3) / 4;
+            let tokens = (item.content.chars().count() + 3).div_ceil(4);
             if current_tokens + tokens <= total_token_budget || budgeted_result.is_empty() {
                 current_tokens += tokens;
                 budgeted_result.push(item);

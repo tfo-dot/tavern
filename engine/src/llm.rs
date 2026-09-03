@@ -1,10 +1,10 @@
+use crate::prompt::ChatMessage;
 use futures_util::StreamExt;
 use reqwest::Client;
 use reqwest_eventsource::{Event, EventSource};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::watch;
-use crate::prompt::ChatMessage;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenerationParams {
@@ -65,13 +65,22 @@ pub async fn fetch_models(endpoint: &str, api_key: &str) -> Result<Vec<String>, 
         request = request.header("Authorization", format!("Bearer {}", api_key));
     }
 
-    let response = request.send().await.map_err(|e| format!("Failed to connect to {}: {}", models_url, e))?;
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("Failed to connect to {}: {}", models_url, e))?;
     if !response.status().is_success() {
-        return Err(format!("Model endpoint returned HTTP status {}", response.status()));
+        return Err(format!(
+            "Model endpoint returned HTTP status {}",
+            response.status()
+        ));
     }
 
-    let json_val: Value = response.json().await.map_err(|e| format!("Invalid JSON from model endpoint: {}", e))?;
-    
+    let json_val: Value = response
+        .json()
+        .await
+        .map_err(|e| format!("Invalid JSON from model endpoint: {}", e))?;
+
     let mut model_ids = Vec::new();
     if let Some(data_array) = json_val.get("data").and_then(|v| v.as_array()) {
         for item in data_array {
@@ -129,16 +138,17 @@ where
         request = request.header("Authorization", format!("Bearer {}", api_key));
     }
 
-    let mut es = EventSource::new(request).map_err(|e| format!("Failed to initiate SSE connection: {}", e))?;
+    let mut es = EventSource::new(request)
+        .map_err(|e| format!("Failed to initiate SSE connection: {}", e))?;
     let mut accumulated = String::new();
 
     loop {
         // Check for cancellation
-        if let Some(rx) = &mut cancel_rx {
-            if *rx.borrow() {
-                es.close();
-                break;
-            }
+        if let Some(rx) = &mut cancel_rx
+            && *rx.borrow()
+        {
+            es.close();
+            break;
         }
 
         tokio::select! {
@@ -149,11 +159,9 @@ where
                     futures_util::future::pending::<()>().await;
                 }
             } => {
-                if let Some(rx) = &cancel_rx {
-                    if *rx.borrow() {
-                        es.close();
-                        break;
-                    }
+                if let Some(rx) = &cancel_rx && *rx.borrow() {
+                    es.close();
+                    break;
                 }
             }
             event_option = es.next() => {
@@ -164,11 +172,9 @@ where
                             break;
                         }
 
-                        if let Ok(json) = serde_json::from_str::<Value>(&message.data) {
-                            if let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
+                        if let Ok(json) = serde_json::from_str::<Value>(&message.data) && let Some(content) = json["choices"][0]["delta"]["content"].as_str() {
                                 accumulated.push_str(content);
                                 on_token(content.to_string());
-                            }
                         }
                     }
                     Some(Err(err)) => {

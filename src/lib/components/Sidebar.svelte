@@ -1,8 +1,10 @@
 <script lang="ts">
-  import type { Character, ChatSummary } from '../types';
+  import type { Character, ChatSummary, Group } from '../types';
 
   export let characters: Character[] = [];
   export let activeCharacterId: string | null = null;
+  export let groups: Group[] = [];
+  export let activeGroupId: string | null = null;
   export let chats: ChatSummary[] = [];
   export let activeChatId: string | null = null;
   export let isOpen = true;
@@ -10,16 +12,26 @@
   export let onSelectCharacter: (id: string) => void;
   export let onCreateCharacter: () => void;
   export let onImportCard: (file: File) => void;
+  export let onSelectGroup: (id: string) => void;
+  export let onCreateGroup: () => void;
+  export let onEditGroup: ((group: Group) => void) | undefined = undefined;
+  export let onDeleteGroup: ((id: string) => void) | undefined = undefined;
+  export let onNewGroupChat: ((groupId: string) => void) | undefined = undefined;
   export let onSelectChat: (id: string) => void;
   export let onNewChat: (characterId: string) => void;
   export let onDeleteChat: (id: string) => void;
   export let onDeleteCharacter: (id: string) => void;
   export let onOpenLorebooks: (() => void) | undefined = undefined;
   export let onOpenSync: (() => void) | undefined = undefined;
+  export let onImportChat: ((file: File) => void) | undefined = undefined;
+  export let onExportChat: ((id: string, title: string) => void) | undefined = undefined;
   export let onClose: () => void;
-  let activeTab: 'characters' | 'chats' = 'characters';
+
+  let activeTab: 'characters' | 'groups' | 'chats' = 'characters';
   let searchQuery = '';
+  let groupSearchQuery = '';
   let fileInputEl: HTMLInputElement;
+  let chatFileInputEl: HTMLInputElement;
 
   $: filteredCharacters = characters.filter((c) => {
     if (!searchQuery.trim()) return true;
@@ -30,7 +42,14 @@
     return nameMatch || descMatch || tagMatch;
   });
 
+  $: filteredGroups = groups.filter((g) => {
+    if (!groupSearchQuery.trim()) return true;
+    const q = groupSearchQuery.toLowerCase();
+    return g.name.toLowerCase().includes(q) || g.description.toLowerCase().includes(q);
+  });
+
   $: activeChar = characters.find((c) => c.id === activeCharacterId);
+  $: activeGroup = groups.find((g) => g.id === activeGroupId);
 
   function handleFileSelected(e: Event) {
     const target = e.target as HTMLInputElement;
@@ -40,13 +59,17 @@
       if (window.innerWidth <= 768) onClose();
     }
   }
-
   function triggerFileInput() {
     if (fileInputEl) fileInputEl.click();
   }
 
   function handleSelectChar(id: string) {
     onSelectCharacter(id);
+    if (window.innerWidth <= 768) onClose();
+  }
+
+  function handleSelectGroup(id: string) {
+    onSelectGroup(id);
     if (window.innerWidth <= 768) onClose();
   }
 
@@ -59,6 +82,23 @@
     onNewChat(characterId);
     if (window.innerWidth <= 768) onClose();
   }
+
+  function handleNewGrpChat(groupId: string) {
+    if (onNewGroupChat) onNewGroupChat(groupId);
+    if (window.innerWidth <= 768) onClose();
+  }
+  function handleChatFileSelected(e: Event) {
+    const target = e.target as HTMLInputElement;
+    if (target.files && target.files[0] && onImportChat) {
+      onImportChat(target.files[0]);
+      target.value = '';
+      if (window.innerWidth <= 768) onClose();
+    }
+  }
+
+  function triggerChatFileInput() {
+    if (chatFileInputEl) chatFileInputEl.click();
+  }
 </script>
 
 <input
@@ -68,6 +108,14 @@
   on:change={handleFileSelected}
   style="display: none;"
 />
+<input
+  type="file"
+  accept=".jsonl,.json"
+  bind:this={chatFileInputEl}
+  on:change={handleChatFileSelected}
+  style="display: none;"
+/>
+
 
 <!-- Mobile Backdrop -->
 <div
@@ -96,14 +144,19 @@
       Characters ({characters.length})
     </button>
     <button
+      class="tab-btn {activeTab === 'groups' ? 'active' : ''}"
+      on:click={() => (activeTab = 'groups')}
+    >
+      Groups ({groups.length})
+    </button>
+    <button
       class="tab-btn {activeTab === 'chats' ? 'active' : ''}"
       on:click={() => (activeTab = 'chats')}
-      disabled={!activeCharacterId}
+      disabled={!activeCharacterId && !activeGroupId}
     >
       Chats ({chats.length})
     </button>
   </div>
-
   <!-- Tab Content: Characters -->
   {#if activeTab === 'characters'}
     <div class="characters-tab">
@@ -196,25 +249,147 @@
     </div>
   {/if}
 
+  <!-- Tab Content: Groups -->
+  {#if activeTab === 'groups'}
+    <div class="characters-tab">
+      <div class="search-and-actions">
+        <input
+          type="text"
+          placeholder="Search roleplay groups..."
+          bind:value={groupSearchQuery}
+          class="search-input"
+        />
+        <div class="actions-row">
+          <button
+            class="primary-action-btn"
+            on:click={() => {
+              onCreateGroup();
+              if (window.innerWidth <= 768) onClose();
+            }}
+          >
+            + New Group
+          </button>
+        </div>
+      </div>
+
+      <div class="character-list">
+        {#if filteredGroups.length === 0}
+          <div class="empty-state">
+            <p>No roleplay groups created yet.</p>
+            <button
+              class="link-btn"
+              on:click={() => {
+                onCreateGroup();
+                if (window.innerWidth <= 768) onClose();
+              }}
+            >
+              Create a group now
+            </button>
+          </div>
+        {:else}
+          {#each filteredGroups as grp}
+            <div
+              class="character-card {grp.id === activeGroupId ? 'active' : ''}"
+              role="button"
+              tabindex="0"
+              on:click={() => handleSelectGroup(grp.id)}
+              on:keydown={(e) => e.key === 'Enter' && handleSelectGroup(grp.id)}
+            >
+              {#if grp.avatar_data_url}
+                <img src={grp.avatar_data_url} alt={grp.name} class="char-avatar-img" />
+              {:else}
+                <div class="char-avatar-placeholder">
+                  👥
+                </div>
+              {/if}
+              <div class="char-info">
+                <div class="char-name-row">
+                  <span class="char-name">{grp.name}</span>
+                  {#if grp.id === activeGroupId}
+                    <span class="active-pill">Active</span>
+                  {/if}
+                </div>
+                <p class="char-desc">
+                  {grp.description || `${grp.members.length} characters in group`}
+                </p>
+                <div class="char-tags">
+                  <span class="tag-pill">{grp.members.length} members</span>
+                  <span class="tag-pill mode-tag">{grp.turn_mode} turn</span>
+                </div>
+              </div>
+
+              <div class="group-card-side-actions">
+                {#if onEditGroup}
+                  <button
+                    class="char-edit-btn"
+                    on:click|stopPropagation={() => {
+                      if (onEditGroup) onEditGroup(grp);
+                      if (window.innerWidth <= 768) onClose();
+                    }}
+                    title="Edit group settings and members"
+                  >
+                    ⚙
+                  </button>
+                {/if}
+                {#if onDeleteGroup}
+                  <button
+                    class="char-delete-btn"
+                    on:click|stopPropagation={() => {
+                      if (confirm(`Delete group "${grp.name}"?`)) {
+                        if (onDeleteGroup) onDeleteGroup(grp.id);
+                      }
+                    }}
+                    title="Delete group"
+                  >
+                    🗑️
+                  </button>
+                {/if}
+              </div>
+            </div>
+          {/each}
+        {/if}
+      </div>
+    </div>
+  {/if}
+
   <!-- Tab Content: Chats -->
   {#if activeTab === 'chats'}
     <div class="chats-tab">
       <div class="chats-header">
         <span class="chats-for-char">
-          Chats with <strong>{activeChar?.card.data.name || 'Character'}</strong>
+          {#if activeGroup}
+            Group: <strong>{activeGroup.name}</strong>
+          {:else}
+            Chats with <strong>{activeChar?.card.data.name || 'Character'}</strong>
+          {/if}
         </span>
-        {#if activeCharacterId}
-          <button class="new-chat-btn" on:click={() => handleNewChat(activeCharacterId)}>
-            + New Chat
-          </button>
-        {/if}
+        <div class="chats-header-actions">
+          {#if onImportChat}
+            <button class="import-chat-btn" on:click={triggerChatFileInput} title="Import SillyTavern JSONL chat log">
+              📥 Import
+            </button>
+          {/if}
+          {#if activeGroup}
+            <button class="new-chat-btn" on:click={() => handleNewGrpChat(activeGroup.id)}>
+              + New
+            </button>
+          {:else if activeCharacterId}
+            <button class="new-chat-btn" on:click={() => handleNewChat(activeCharacterId)}>
+              + New
+            </button>
+          {/if}
+        </div>
       </div>
 
       <div class="chat-list">
         {#if chats.length === 0}
           <div class="empty-state">
             <p>No chat sessions yet.</p>
-            {#if activeCharacterId}
+            {#if activeGroup}
+              <button class="link-btn" on:click={() => handleNewGrpChat(activeGroup.id)}>
+                Start a new group conversation
+              </button>
+            {:else if activeCharacterId}
               <button class="link-btn" on:click={() => handleNewChat(activeCharacterId)}>
                 Start a new conversation
               </button>
@@ -230,19 +405,35 @@
               on:keydown={(e) => e.key === 'Enter' && handleSelectChat(chat.id)}
             >
               <div class="chat-item-main">
-                <span class="chat-item-title">{chat.title}</span>
+                <div class="chat-title-row">
+                  <span class="chat-item-title">{chat.title}</span>
+                  {#if chat.group_id}
+                    <span class="chat-group-badge">👥 Group</span>
+                  {/if}
+                </div>
                 <span class="chat-item-preview">{chat.last_message_preview}</span>
                 <span class="chat-item-meta">{chat.message_count} messages</span>
               </div>
-              <button
-                class="chat-delete-btn"
-                on:click|stopPropagation={() => {
-                  if (confirm(`Delete chat "${chat.title}"?`)) onDeleteChat(chat.id);
-                }}
-                title="Delete chat"
-              >
-                🗑️
-              </button>
+              <div class="chat-item-actions">
+                {#if onExportChat}
+                  <button
+                    class="chat-action-btn chat-export-btn"
+                    on:click|stopPropagation={() => onExportChat && onExportChat(chat.id, chat.title)}
+                    title="Export as SillyTavern JSONL"
+                  >
+                    📤
+                  </button>
+                {/if}
+                <button
+                  class="chat-action-btn chat-delete-btn"
+                  on:click|stopPropagation={() => {
+                    if (confirm(`Delete chat "${chat.title}"?`)) onDeleteChat(chat.id);
+                  }}
+                  title="Delete chat"
+                >
+                  🗑️
+                </button>
+              </div>
             </div>
           {/each}
         {/if}
@@ -547,28 +738,106 @@
     border-radius: 4px;
   }
 
+  .tag-pill.mode-tag {
+    color: #f9e2af;
+  }
+
+  .group-card-side-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+  }
+
+  .char-edit-btn {
+    background: transparent;
+    border: none;
+    color: #a6adc8;
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 0.3rem 0.4rem;
+    border-radius: 4px;
+    opacity: 0.7;
+    transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+  }
+
+  .char-edit-btn:hover {
+    opacity: 1;
+    background: #313244;
+    color: #cba6f7;
+  }
+
+  .chat-title-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .chat-group-badge {
+    font-size: 0.65rem;
+    font-weight: 700;
+    background: rgba(203, 166, 247, 0.15);
+    color: #cba6f7;
+    padding: 0.1rem 0.3rem;
+    border-radius: 4px;
+    white-space: nowrap;
+  }
+
   .char-delete-btn,
-  .chat-delete-btn {
+  .chat-action-btn {
     background: transparent;
     border: none;
     color: #6c7086;
     cursor: pointer;
     font-size: 0.85rem;
-    padding: 0.3rem 0.5rem;
+    padding: 0.3rem 0.4rem;
     border-radius: 4px;
     opacity: 0.7;
-    transition: opacity 0.15s ease;
+    transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
   }
 
   .character-card:hover .char-delete-btn,
-  .chat-item:hover .chat-delete-btn {
+  .chat-item:hover .chat-action-btn {
     opacity: 1;
+  }
+
+  .chat-export-btn:hover {
+    color: #89b4fa;
+    background: rgba(137, 180, 250, 0.15);
   }
 
   .char-delete-btn:hover,
   .chat-delete-btn:hover {
     color: #f38ba8;
     background: rgba(243, 139, 168, 0.15);
+  }
+
+  .chats-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+
+  .import-chat-btn {
+    background: #313244;
+    color: #cdd6f4;
+    border: 1px solid #45475a;
+    border-radius: 6px;
+    padding: 0.4rem 0.65rem;
+    font-weight: 600;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+
+  .import-chat-btn:hover {
+    background: #45475a;
+  }
+
+  .chat-item-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.2rem;
+    margin-left: 0.5rem;
   }
 
   .chats-header {

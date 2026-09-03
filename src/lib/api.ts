@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   Character,
+  Group,
   ChatTree,
   ChatSummary,
   MessageViewNode,
@@ -42,6 +43,53 @@ export async function exportCardJson(characterId: string): Promise<string> {
   return await invoke<string>('export_card_json', { characterId });
 }
 
+
+// Group APIs
+export async function getAllGroups(): Promise<Group[]> {
+  return await invoke<Group[]>('get_all_groups');
+}
+
+export async function getGroup(id: string): Promise<Group> {
+  return await invoke<Group>('get_group', { id });
+}
+
+export async function saveGroup(group: Group): Promise<Group> {
+  return await invoke<Group>('save_group', { group });
+}
+
+export async function deleteGroup(id: string): Promise<void> {
+  await invoke('delete_group', { id });
+}
+
+export async function createGroupChat(
+  groupId: string,
+  title?: string,
+  firstMes?: string,
+  firstSpeakerId?: string
+): Promise<ChatTree> {
+  return await invoke<ChatTree>('create_group_chat', {
+    groupId,
+    title: title || null,
+    firstMes: firstMes || null,
+    firstSpeakerId: firstSpeakerId || null,
+  });
+}
+
+export async function listGroupChats(groupId: string): Promise<ChatSummary[]> {
+  return await invoke<ChatSummary[]>('list_group_chats', { groupId });
+}
+
+export async function setMessageAuthor(
+  id: string,
+  characterId: string | null,
+  name: string | null
+): Promise<MessageViewNode[]> {
+  return await invoke<MessageViewNode[]>('set_message_author', {
+    id,
+    characterId,
+    name,
+  });
+}
 // Chat APIs
 export async function createChat(
   characterId: string,
@@ -67,6 +115,23 @@ export async function deleteChat(chatId: string): Promise<void> {
   await invoke('delete_chat', { chatId });
 }
 
+export async function importChatJsonl(
+  fileBytes: number[] | Uint8Array,
+  characterId?: string,
+  title?: string
+): Promise<ChatTree> {
+  const bytesArray = Array.from(fileBytes);
+  return await invoke<ChatTree>('import_chat_jsonl', {
+    fileBytes: bytesArray,
+    characterId: characterId || null,
+    title: title || null,
+  });
+}
+
+export async function exportChatJsonl(chatId: string): Promise<string> {
+  return await invoke<string>('export_chat_jsonl', { chatId });
+}
+
 export async function getActiveMessages(): Promise<MessageViewNode[]> {
   return await invoke<MessageViewNode[]>('get_active_messages');
 }
@@ -74,12 +139,16 @@ export async function getActiveMessages(): Promise<MessageViewNode[]> {
 export async function appendMessage(
   role: AuthorRole,
   content: string,
-  parentId: string | null
+  parentId: string | null,
+  characterId?: string | null,
+  name?: string | null
 ): Promise<string> {
   return await invoke<string>('append_message', {
     role,
     content,
     parentId,
+    characterId: characterId || null,
+    name: name || null,
   });
 }
 
@@ -141,8 +210,20 @@ export async function fetchEndpointModels(
 }
 
 // Generation APIs
-export async function generateReply(isSwipe = false): Promise<void> {
-  await invoke('generate_reply', { isSwipe });
+export async function generateReply(
+  isSwipe = false,
+  isContinue = false,
+  targetCharacterId?: string | null
+): Promise<void> {
+  await invoke('generate_reply', {
+    isSwipe,
+    isContinue,
+    targetCharacterId: targetCharacterId || null,
+  });
+}
+
+export async function continueReply(): Promise<void> {
+  await invoke('generate_reply', { isSwipe: false, isContinue: true, targetCharacterId: null });
 }
 
 export async function abortGeneration(): Promise<void> {

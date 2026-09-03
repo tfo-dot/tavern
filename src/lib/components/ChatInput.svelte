@@ -4,10 +4,12 @@
   export let isGenerating = false;
   export let placeholder = 'Type a message...';
   export let hasMessages = false;
+  export let lastMessageIsAssistant = false;
 
   export let onSend: (text: string) => void;
   export let onStop: () => void;
   export let onRegenerate: () => void;
+  export let onContinue: (() => void) | undefined = undefined;
 
   let text = '';
   let textareaEl: HTMLTextAreaElement;
@@ -20,7 +22,7 @@
   }
 
   function submit() {
-    if (!text.trim() || isGenerating) return;
+    if (isGenerating) return;
     const toSend = text;
     text = '';
     adjustHeight();
@@ -57,6 +59,15 @@
           <span class="stop-icon">■</span> Stop
         </button>
       {:else}
+        {#if hasMessages && lastMessageIsAssistant && onContinue}
+          <button
+            class="secondary-btn continue-btn"
+            on:click={onContinue}
+            title="Continue latest AI message generation"
+          >
+            ▶ Continue
+          </button>
+        {/if}
         {#if hasMessages}
           <button
             class="secondary-btn"
@@ -68,9 +79,9 @@
         {/if}
         <button
           class="send-btn"
-          disabled={!text.trim()}
+          disabled={isGenerating}
           on:click={submit}
-          title="Send message (Enter)"
+          title={text.trim() ? 'Send message (Enter)' : 'Send without text / Trigger AI turn (Enter)'}
         >
           Send ➔
         </button>
@@ -78,7 +89,7 @@
     </div>
   </div>
   <div class="shortcuts-hint">
-    <span><strong>Enter</strong> to send &bull; <strong>Shift+Enter</strong> for newline</span>
+    <span><strong>Enter</strong> to send (or generate next turn if empty) &bull; <strong>Shift+Enter</strong> for newline</span>
   </div>
 </div>
 

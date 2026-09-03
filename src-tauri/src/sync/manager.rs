@@ -49,7 +49,7 @@ impl SyncManager {
         let initial_name = settings
             .device_name
             .clone()
-            .unwrap_or_else(|| get_default_device_name());
+            .unwrap_or_else(get_default_device_name);
 
         let sync_port = settings.sync_port.unwrap_or(DEFAULT_SYNC_PORT);
         let (shutdown_tx, _) = watch::channel(false);

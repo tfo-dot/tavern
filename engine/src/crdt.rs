@@ -1,18 +1,18 @@
+use chrono::{DateTime, Utc};
 use loro::{ExportMode, LoroDoc, LoroValue, VersionVector};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
 use crate::character::{Character, UserPersona};
-use crate::chat::ChatTree;
+use crate::chat::{ChatTree, Group};
 use crate::lorebook::Lorebook;
 
 /// Tombstone record for tracking deleted entities across distributed peers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeletionTombstone {
     pub id: String,
-    pub entity_type: String, // "character" | "chat" | "lorebook" | "persona"
+    pub entity_type: String, // "character" | "chat" | "lorebook" | "persona" | "group"
     pub deleted_at: DateTime<Utc>,
 }
 
@@ -43,7 +43,9 @@ impl TavernCrdtDoc {
     }
 
     pub fn export_snapshot(&self) -> Result<Vec<u8>, String> {
-        self.doc.export(ExportMode::Snapshot).map_err(|e| e.to_string())
+        self.doc
+            .export(ExportMode::Snapshot)
+            .map_err(|e| e.to_string())
     }
 
     pub fn state_vector(&self) -> VersionVector {
@@ -51,7 +53,11 @@ impl TavernCrdtDoc {
     }
 
     pub fn export_updates_from(&self, vv: &VersionVector) -> Result<Vec<u8>, String> {
-        self.doc.export(ExportMode::Updates { from: std::borrow::Cow::Borrowed(vv) }).map_err(|e| e.to_string())
+        self.doc
+            .export(ExportMode::Updates {
+                from: std::borrow::Cow::Borrowed(vv),
+            })
+            .map_err(|e| e.to_string())
     }
 
     pub fn import_updates(&self, updates: &[u8]) -> Result<(), String> {
@@ -71,8 +77,10 @@ impl TavernCrdtDoc {
     pub fn set_character(&self, character: &Character) -> Result<(), String> {
         let chars_map = self.doc.get_map("characters");
         let json_str = serde_json::to_string(character).map_err(|e| e.to_string())?;
-        chars_map.insert(&character.id, json_str).map_err(|e| e.to_string())?;
-        
+        chars_map
+            .insert(&character.id, json_str)
+            .map_err(|e| e.to_string())?;
+
         // Remove from tombstones if it was previously marked deleted
         let tombstones_map = self.doc.get_map("tombstones");
         let tomb_key = format!("character:{}", character.id);
@@ -93,7 +101,9 @@ impl TavernCrdtDoc {
             deleted_at: Utc::now(),
         };
         let tomb_json = serde_json::to_string(&tombstone).map_err(|e| e.to_string())?;
-        tombstones_map.insert(&format!("character:{id}"), tomb_json).map_err(|e| e.to_string())?;
+        tombstones_map
+            .insert(&format!("character:{id}"), tomb_json)
+            .map_err(|e| e.to_string())?;
 
         self.commit();
         Ok(())
@@ -105,14 +115,14 @@ impl TavernCrdtDoc {
         let value = chars_map.get_value();
         if let LoroValue::Map(map) = value {
             for (_, val) in map.iter() {
-                if let LoroValue::String(s) = val {
-                    if let Ok(char_obj) = serde_json::from_str::<Character>(s) {
-                        list.push(char_obj);
-                    }
+                if let LoroValue::String(s) = val
+                    && let Ok(char_obj) = serde_json::from_str::<Character>(s)
+                {
+                    list.push(char_obj);
                 }
             }
         }
-        list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        list.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(list)
     }
 
@@ -121,7 +131,9 @@ impl TavernCrdtDoc {
     pub fn set_chat(&self, chat: &ChatTree) -> Result<(), String> {
         let chats_map = self.doc.get_map("chats");
         let json_str = serde_json::to_string(chat).map_err(|e| e.to_string())?;
-        chats_map.insert(&chat.id.to_string(), json_str).map_err(|e| e.to_string())?;
+        chats_map
+            .insert(&chat.id.to_string(), json_str)
+            .map_err(|e| e.to_string())?;
 
         let tombstones_map = self.doc.get_map("tombstones");
         let tomb_key = format!("chat:{}", chat.id);
@@ -143,7 +155,9 @@ impl TavernCrdtDoc {
             deleted_at: Utc::now(),
         };
         let tomb_json = serde_json::to_string(&tombstone).map_err(|e| e.to_string())?;
-        tombstones_map.insert(&format!("chat:{id_str}"), tomb_json).map_err(|e| e.to_string())?;
+        tombstones_map
+            .insert(&format!("chat:{id_str}"), tomb_json)
+            .map_err(|e| e.to_string())?;
 
         self.commit();
         Ok(())
@@ -155,14 +169,14 @@ impl TavernCrdtDoc {
         let value = chats_map.get_value();
         if let LoroValue::Map(map) = value {
             for (_, val) in map.iter() {
-                if let LoroValue::String(s) = val {
-                    if let Ok(chat) = serde_json::from_str::<ChatTree>(s) {
-                        list.push(chat);
-                    }
+                if let LoroValue::String(s) = val
+                    && let Ok(chat) = serde_json::from_str::<ChatTree>(s)
+                {
+                    list.push(chat);
                 }
             }
         }
-        list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        list.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(list)
     }
 
@@ -171,7 +185,9 @@ impl TavernCrdtDoc {
     pub fn set_persona(&self, persona: &UserPersona) -> Result<(), String> {
         let personas_map = self.doc.get_map("personas");
         let json_str = serde_json::to_string(persona).map_err(|e| e.to_string())?;
-        personas_map.insert(&persona.id, json_str).map_err(|e| e.to_string())?;
+        personas_map
+            .insert(&persona.id, json_str)
+            .map_err(|e| e.to_string())?;
 
         let tombstones_map = self.doc.get_map("tombstones");
         let tomb_key = format!("persona:{}", persona.id);
@@ -192,7 +208,9 @@ impl TavernCrdtDoc {
             deleted_at: Utc::now(),
         };
         let tomb_json = serde_json::to_string(&tombstone).map_err(|e| e.to_string())?;
-        tombstones_map.insert(&format!("persona:{id}"), tomb_json).map_err(|e| e.to_string())?;
+        tombstones_map
+            .insert(&format!("persona:{id}"), tomb_json)
+            .map_err(|e| e.to_string())?;
 
         self.commit();
         Ok(())
@@ -204,10 +222,10 @@ impl TavernCrdtDoc {
         let value = personas_map.get_value();
         if let LoroValue::Map(map) = value {
             for (_, val) in map.iter() {
-                if let LoroValue::String(s) = val {
-                    if let Ok(persona) = serde_json::from_str::<UserPersona>(s) {
-                        list.push(persona);
-                    }
+                if let LoroValue::String(s) = val
+                    && let Ok(persona) = serde_json::from_str::<UserPersona>(s)
+                {
+                    list.push(persona);
                 }
             }
         }
@@ -219,7 +237,9 @@ impl TavernCrdtDoc {
     pub fn set_lorebook(&self, lorebook: &Lorebook) -> Result<(), String> {
         let lorebooks_map = self.doc.get_map("lorebooks");
         let json_str = serde_json::to_string(lorebook).map_err(|e| e.to_string())?;
-        lorebooks_map.insert(&lorebook.id, json_str).map_err(|e| e.to_string())?;
+        lorebooks_map
+            .insert(&lorebook.id, json_str)
+            .map_err(|e| e.to_string())?;
 
         let tombstones_map = self.doc.get_map("tombstones");
         let tomb_key = format!("lorebook:{}", lorebook.id);
@@ -240,7 +260,9 @@ impl TavernCrdtDoc {
             deleted_at: Utc::now(),
         };
         let tomb_json = serde_json::to_string(&tombstone).map_err(|e| e.to_string())?;
-        tombstones_map.insert(&format!("lorebook:{id}"), tomb_json).map_err(|e| e.to_string())?;
+        tombstones_map
+            .insert(&format!("lorebook:{id}"), tomb_json)
+            .map_err(|e| e.to_string())?;
 
         self.commit();
         Ok(())
@@ -252,14 +274,68 @@ impl TavernCrdtDoc {
         let value = lorebooks_map.get_value();
         if let LoroValue::Map(map) = value {
             for (_, val) in map.iter() {
-                if let LoroValue::String(s) = val {
-                    if let Ok(book) = serde_json::from_str::<Lorebook>(s) {
-                        list.push(book);
-                    }
+                if let LoroValue::String(s) = val
+                    && let Ok(book) = serde_json::from_str::<Lorebook>(s)
+                {
+                    list.push(book);
                 }
             }
         }
-        list.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+
+        list.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
+        Ok(list)
+    }
+
+    // --- Groups ---
+
+    pub fn set_group(&self, group: &Group) -> Result<(), String> {
+        let groups_map = self.doc.get_map("groups");
+        let json_str = serde_json::to_string(group).map_err(|e| e.to_string())?;
+        groups_map
+            .insert(&group.id, json_str)
+            .map_err(|e| e.to_string())?;
+
+        let tombstones_map = self.doc.get_map("tombstones");
+        let tomb_key = format!("group:{}", group.id);
+        let _ = tombstones_map.delete(&tomb_key);
+
+        self.commit();
+        Ok(())
+    }
+
+    pub fn delete_group(&self, id: &str) -> Result<(), String> {
+        let groups_map = self.doc.get_map("groups");
+        let _ = groups_map.delete(id);
+
+        let tombstones_map = self.doc.get_map("tombstones");
+        let tombstone = DeletionTombstone {
+            id: id.to_string(),
+            entity_type: "group".to_string(),
+            deleted_at: Utc::now(),
+        };
+        let tomb_json = serde_json::to_string(&tombstone).map_err(|e| e.to_string())?;
+        tombstones_map
+            .insert(&format!("group:{id}"), tomb_json)
+            .map_err(|e| e.to_string())?;
+
+        self.commit();
+        Ok(())
+    }
+
+    pub fn get_groups(&self) -> Result<Vec<Group>, String> {
+        let groups_map = self.doc.get_map("groups");
+        let mut list = Vec::new();
+        let value = groups_map.get_value();
+        if let LoroValue::Map(map) = value {
+            for (_, val) in map.iter() {
+                if let LoroValue::String(s) = val
+                    && let Ok(group) = serde_json::from_str::<Group>(s)
+                {
+                    list.push(group);
+                }
+            }
+        }
+        list.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(list)
     }
 
@@ -271,10 +347,10 @@ impl TavernCrdtDoc {
         let value = tombstones_map.get_value();
         if let LoroValue::Map(map) = value {
             for (k, val) in map.iter() {
-                if let LoroValue::String(s) = val {
-                    if let Ok(tomb) = serde_json::from_str::<DeletionTombstone>(s) {
-                        map_out.insert(k.to_string(), tomb);
-                    }
+                if let LoroValue::String(s) = val
+                    && let Ok(tomb) = serde_json::from_str::<DeletionTombstone>(s)
+                {
+                    map_out.insert(k.to_string(), tomb);
                 }
             }
         }
