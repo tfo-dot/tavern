@@ -198,7 +198,7 @@
             </button>
           </div>
         {:else}
-          {#each filteredCharacters as char}
+          {#each filteredCharacters as char (char.id)}
             <div
               class="character-card {char.id === activeCharacterId ? 'active' : ''}"
               role="button"
@@ -225,7 +225,7 @@
                 </p>
                 {#if char.card.data.tags && char.card.data.tags.length > 0}
                   <div class="char-tags">
-                    {#each char.card.data.tags.slice(0, 3) as tag}
+                    {#each char.card.data.tags.slice(0, 3) as tag (tag)}
                       <span class="tag-pill">{tag}</span>
                     {/each}
                   </div>
@@ -287,7 +287,7 @@
             </button>
           </div>
         {:else}
-          {#each filteredGroups as grp}
+          {#each filteredGroups as grp (grp.id)}
             <div
               class="character-card {grp.id === activeGroupId ? 'active' : ''}"
               role="button"
@@ -396,7 +396,7 @@
             {/if}
           </div>
         {:else}
-          {#each chats as chat}
+          {#each chats as chat (chat.id)}
             <div
               class="chat-item {chat.id === activeChatId ? 'active' : ''}"
               role="button"

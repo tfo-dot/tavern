@@ -1,12 +1,12 @@
 <script lang="ts">
-  import type { Character, MessageViewNode } from '../types';
-  import { formatMessageContent } from '../formatter';
+  import type { Character, MessageViewNode } from "../types";
+  import { formatMessageContent } from "../formatter";
 
   export let message: MessageViewNode;
   export let characters: Character[] = [];
-  export let characterName = 'Character';
+  export let characterName = "Character";
   export let characterAvatar: string | null = null;
-  export let userName = 'You';
+  export let userName = "You";
   export let userAvatar: string | null = null;
   export let isGenerating = false;
   export let isLastMessage = false;
@@ -16,13 +16,20 @@
   export let onRegenerateSwipe: () => void;
   export let onEdit: (id: string, newContent: string) => void;
   export let onDelete: (id: string) => void;
-  export let onOpenImage: ((src: string, alt: string) => void) | undefined = undefined;
+  export let onOpenImage: ((src: string, alt: string) => void) | undefined =
+    undefined;
   export let onContinue: (() => void) | undefined = undefined;
-  export let onSetSpeaker: ((messageId: string, characterId: string | null, name: string | null) => void) | undefined = undefined;
-  export let continuingText: string = '';
+  export let onSetSpeaker:
+    | ((
+        messageId: string,
+        characterId: string | null,
+        name: string | null,
+      ) => void)
+    | undefined = undefined;
+  export let continuingText: string = "";
 
   let isEditing = false;
-  let editDraft = '';
+  let editDraft = "";
   let copied = false;
   let isChangingSpeaker = false;
 
@@ -34,12 +41,16 @@
   let isDragging = false;
   let offsetX = 0;
 
-  $: isUser = message.role === 'User';
-  $: matchedChar = (!isUser && message.character_id)
-    ? characters.find((c) => c.id === message.character_id)
-    : (!isUser && message.name)
-    ? characters.find((c) => c.card.data.name.toLowerCase() === message.name?.toLowerCase())
-    : null;
+  $: isUser = message.role === "User";
+  $: matchedChar =
+    !isUser && message.character_id
+      ? characters.find((c) => c.id === message.character_id)
+      : !isUser && message.name
+        ? characters.find(
+            (c) =>
+              c.card.data.name.toLowerCase() === message.name?.toLowerCase(),
+          )
+        : null;
 
   $: displayName = isUser
     ? userName
@@ -50,8 +61,12 @@
     : matchedChar?.avatar_data_url || characterAvatar;
 
   $: initials = displayName.slice(0, 2).toUpperCase();
-  $: displayContent = message.content + (continuingText || '');
-  $: formattedHtml = formatMessageContent(displayContent, displayName, userName);
+  $: displayContent = message.content + (continuingText || "");
+  $: formattedHtml = formatMessageContent(
+    displayContent,
+    displayName,
+    userName,
+  );
 
   function handleSelectSpeaker(charId: string) {
     const ch = characters.find((c) => c.id === charId);
@@ -82,7 +97,7 @@
       copied = true;
       setTimeout(() => (copied = false), 2000);
     } catch (e) {
-      console.error('Failed to copy text', e);
+      console.error("Failed to copy text", e);
     }
   }
 
@@ -100,10 +115,10 @@
 
   function handleRenderedTextClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
-    if (target && target.tagName === 'IMG') {
+    if (target && target.tagName === "IMG") {
       const img = target as HTMLImageElement;
       if (img.src && onOpenImage) {
-        onOpenImage(img.src, img.alt || 'Chat Image');
+        onOpenImage(img.src, img.alt || "Chat Image");
       }
     }
   }
@@ -161,8 +176,12 @@
 </script>
 
 <div
-  class="message-wrapper {isUser ? 'user-msg' : 'assistant-msg'} {isDragging ? 'is-dragging' : ''}"
-  style="transform: translateX({offsetX}px); transition: {isDragging ? 'none' : 'transform 0.2s ease'};"
+  class="message-wrapper {isUser ? 'user-msg' : 'assistant-msg'} {isDragging
+    ? 'is-dragging'
+    : ''}"
+  style="transform: translateX({offsetX}px); transition: {isDragging
+    ? 'none'
+    : 'transform 0.2s ease'};"
   on:touchstart={handleTouchStart}
   on:touchmove={handleTouchMove}
   on:touchend={handleTouchEnd}
@@ -171,10 +190,14 @@
   aria-label="chat message"
 >
   {#if isDragging && offsetX > 25 && message.can_swipe_left}
-    <div class="swipe-hint hint-left">◀ Prev ({message.sibling_index} / {message.sibling_total})</div>
+    <div class="swipe-hint hint-left">
+      ◀ Prev ({message.sibling_index} / {message.sibling_total})
+    </div>
   {/if}
   {#if isDragging && offsetX < -25 && message.can_swipe_right}
-    <div class="swipe-hint hint-right">Next ({message.sibling_index + 2} / {message.sibling_total}) ▶</div>
+    <div class="swipe-hint hint-right">
+      Next ({message.sibling_index + 2} / {message.sibling_total}) ▶
+    </div>
   {/if}
   <!-- Avatar -->
   <div class="avatar-col">
@@ -183,13 +206,17 @@
         src={avatarSrc}
         alt={displayName}
         class="avatar-img clickable-avatar"
-        on:click={() => avatarSrc && onOpenImage && onOpenImage(avatarSrc, displayName)}
+        on:click={() =>
+          avatarSrc && onOpenImage && onOpenImage(avatarSrc, displayName)}
         role="presentation"
       />
     {:else}
       <div
-        class="avatar-placeholder {isUser ? 'user-avatar' : 'char-avatar'} clickable-avatar"
-        on:click={() => avatarSrc && onOpenImage && onOpenImage(avatarSrc, displayName)}
+        class="avatar-placeholder {isUser
+          ? 'user-avatar'
+          : 'char-avatar'} clickable-avatar"
+        on:click={() =>
+          avatarSrc && onOpenImage && onOpenImage(avatarSrc, displayName)}
         role="presentation"
       >
         {initials}
@@ -215,18 +242,32 @@
 
           {#if isChangingSpeaker}
             <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <div class="speaker-dropdown" on:click|stopPropagation role="menu" tabindex="-1">
+            <div
+              class="speaker-dropdown"
+              on:click|stopPropagation
+              role="menu"
+              tabindex="-1"
+            >
               <span class="dropdown-header">Reassign Speaker:</span>
-              {#each characters as ch}
+              {#each characters as ch (ch.id)}
                 <button
                   type="button"
-                  class="dropdown-item {ch.id === (message.character_id || matchedChar?.id) ? 'active' : ''}"
+                  class="dropdown-item {ch.id ===
+                  (message.character_id || matchedChar?.id)
+                    ? 'active'
+                    : ''}"
                   on:click={() => handleSelectSpeaker(ch.id)}
                 >
                   {#if ch.avatar_data_url}
-                    <img src={ch.avatar_data_url} alt={ch.card.data.name} class="item-avatar" />
+                    <img
+                      src={ch.avatar_data_url}
+                      alt={ch.card.data.name}
+                      class="item-avatar"
+                    />
                   {:else}
-                    <span class="item-avatar-init">{ch.card.data.name.slice(0, 2).toUpperCase()}</span>
+                    <span class="item-avatar-init"
+                      >{ch.card.data.name.slice(0, 2).toUpperCase()}</span
+                    >
                   {/if}
                   <span>{ch.card.data.name}</span>
                 </button>
@@ -238,7 +279,7 @@
         <span class="sender-name">{displayName}</span>
       {/if}
       <span class="role-badge {isUser ? 'badge-user' : 'badge-assistant'}">
-        {isUser ? 'User' : 'Character'}
+        {isUser ? "User" : "Character"}
       </span>
       <!-- Swipe Pagination if multiple branches exist -->
       {#if !isUser && message.sibling_total > 1}
@@ -288,19 +329,24 @@
         <button
           class="action-icon-btn"
           on:click={copyText}
-          title={copied ? 'Copied!' : 'Copy message'}
+          title={copied ? "Copied!" : "Copy message"}
         >
-          {copied ? '✓' : '📋'}
+          {copied ? "✓" : "📋"}
         </button>
         {#if !isEditing}
-          <button class="action-icon-btn" on:click={startEdit} title="Edit message">
+          <button
+            class="action-icon-btn"
+            on:click={startEdit}
+            title="Edit message"
+          >
             ✏️
           </button>
         {/if}
         <button
           class="action-icon-btn delete-btn"
           on:click={() => {
-            if (confirm('Delete this message and its branch?')) onDelete(message.id);
+            if (confirm("Delete this message and its branch?"))
+              onDelete(message.id);
           }}
           title="Delete message"
         >
@@ -320,7 +366,12 @@
           </div>
         </div>
       {:else}
-        <div class="rendered-text" on:click={handleRenderedTextClick} role="presentation">
+        <div
+          class="rendered-text"
+          on:click={handleRenderedTextClick}
+          role="presentation"
+        >
+          <!-- eslint-disable-next-line svelte/no-at-html-tags -->
           {@html formattedHtml}
         </div>
       {/if}
@@ -595,7 +646,9 @@
     box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
     display: inline-block;
     vertical-align: middle;
-    transition: filter 0.15s ease, transform 0.15s ease;
+    transition:
+      filter 0.15s ease,
+      transform 0.15s ease;
   }
   .rendered-text :global(img:hover) {
     filter: brightness(1.05);
@@ -685,7 +738,6 @@
     cursor: pointer;
     font-size: 0.85rem;
   }
-
 
   .speaker-selector-container {
     position: relative;

@@ -1,15 +1,22 @@
 <script lang="ts">
-  import type { Character, CharacterCardV2, CharacterBook, Lorebook, LorebookEntry } from '../types';
-  import { exportCardJson, exportCardPng, getAllLorebooks } from '../api';
+  import type {
+    Character,
+    CharacterCardV2,
+    CharacterBook,
+    Lorebook,
+    LorebookEntry,
+    LorebookPosition,
+  } from "../types";
+  import { exportCardJson, exportCardPng, getAllLorebooks } from "../api";
 
   export let character: Character | null = null;
   export let isOpen = false;
   export let onSave: (saved: Character) => void;
   export let onClose: () => void;
 
-  let activeTab: 'basic' | 'greetings' | 'lorebook' | 'advanced' = 'basic';
+  let activeTab: "basic" | "greetings" | "lorebook" | "advanced" = "basic";
   let fileInputEl: HTMLInputElement;
-  let tagInputStr = '';
+  let tagInputStr = "";
 
   let draftCard: CharacterCardV2;
   let draftAvatar: string | null = null;
@@ -29,22 +36,18 @@
     entries: [],
   };
   let selectedEmbeddedEntryId: string | null = null;
-  let embeddedKeyStr = '';
-  let embeddedSecKeyStr = '';
+  let embeddedKeyStr = "";
+  let embeddedSecKeyStr = "";
 
-  let wasOpen = false;
-  $: if (isOpen && !wasOpen) {
-    wasOpen = true;
+  $: if (isOpen) {
     initEditor();
-  } else if (!isOpen) {
-    wasOpen = false;
   }
 
   async function initEditor() {
     try {
       availableLorebooks = await getAllLorebooks();
     } catch (e) {
-      console.error('Failed to fetch lorebooks:', e);
+      console.error("Failed to fetch lorebooks:", e);
     }
 
     if (character) {
@@ -52,12 +55,14 @@
       draftCard = JSON.parse(JSON.stringify(character.card));
       draftAvatar = character.avatar_data_url;
       alternateGreetings = [...(character.card.data.alternate_greetings || [])];
-      tagInputStr = (character.card.data.tags || []).join(', ');
+      tagInputStr = (character.card.data.tags || []).join(", ");
       linkedLorebookIds = [...(character.card.data.lorebook_ids || [])];
 
       if (character.card.data.character_book) {
         hasEmbeddedBook = true;
-        embeddedBook = JSON.parse(JSON.stringify(character.card.data.character_book));
+        embeddedBook = JSON.parse(
+          JSON.stringify(character.card.data.character_book),
+        );
         if (embeddedBook.entries.length > 0) {
           selectEmbeddedEntry(embeddedBook.entries[0].id);
         }
@@ -76,18 +81,18 @@
     } else {
       draftId = null;
       draftCard = {
-        spec: 'chara_card_v2',
-        spec_version: '2.0',
+        spec: "chara_card_v2",
+        spec_version: "2.0",
         data: {
-          name: '',
-          description: '',
-          personality: '',
-          scenario: '',
-          first_mes: '',
-          mes_example: '',
-          creator_notes: '',
-          system_prompt: '',
-          post_history_instructions: '',
+          name: "",
+          description: "",
+          personality: "",
+          scenario: "",
+          first_mes: "",
+          mes_example: "",
+          creator_notes: "",
+          system_prompt: "",
+          post_history_instructions: "",
           alternate_greetings: [],
           tags: [],
           character_book: null,
@@ -96,7 +101,7 @@
       };
       draftAvatar = null;
       alternateGreetings = [];
-      tagInputStr = '';
+      tagInputStr = "";
       linkedLorebookIds = [];
       hasEmbeddedBook = false;
       embeddedBook = {
@@ -111,29 +116,100 @@
     }
   }
 
-  $: selectedEmbeddedEntry = embeddedBook.entries.find((e) => e.id === selectedEmbeddedEntryId) || null;
+  $: selectedEmbeddedEntry =
+    embeddedBook.entries.find((e) => e.id === selectedEmbeddedEntryId) || null;
 
   function selectEmbeddedEntry(id: string) {
     selectedEmbeddedEntryId = id;
     const entry = embeddedBook.entries.find((e) => e.id === id);
     if (entry) {
-      embeddedKeyStr = (entry.keys || []).join(', ');
-      embeddedSecKeyStr = (entry.secondary_keys || []).join(', ');
+      embeddedKeyStr = (entry.keys || []).join(", ");
+      embeddedSecKeyStr = (entry.secondary_keys || []).join(", ");
+    }
+  }
+
+  function handlePositionChange(newPosition: LorebookPosition) {
+    if (!selectedEmbeddedEntry) return;
+
+    const index = embeddedBook.entries.findIndex(
+      (e) => e.id === selectedEmbeddedEntryId,
+    );
+    if (index !== -1) {
+      embeddedBook.entries[index] = {
+        ...embeddedBook.entries[index],
+        position: newPosition,
+      };
+    }
+  }
+
+  function handleCommentChange(newComment: string) {
+    if (!selectedEmbeddedEntry) return;
+
+    const index = embeddedBook.entries.findIndex(
+      (e) => e.id === selectedEmbeddedEntryId,
+    );
+    if (index !== -1) {
+      embeddedBook.entries[index] = {
+        ...embeddedBook.entries[index],
+        comment: newComment,
+      };
+    }
+  }
+
+  function handleConstantChange(val: boolean) {
+    if (!selectedEmbeddedEntry) return;
+
+    const index = embeddedBook.entries.findIndex(
+      (e) => e.id === selectedEmbeddedEntryId,
+    );
+    if (index !== -1) {
+      embeddedBook.entries[index] = {
+        ...embeddedBook.entries[index],
+        constant: val,
+      };
+    }
+  }
+
+  function handleSelectiveChange(val: boolean) {
+    if (!selectedEmbeddedEntry) return;
+
+    const index = embeddedBook.entries.findIndex(
+      (e) => e.id === selectedEmbeddedEntryId,
+    );
+    if (index !== -1) {
+      embeddedBook.entries[index] = {
+        ...embeddedBook.entries[index],
+        selective: val,
+      };
+    }
+  }
+
+  function handleContentChange(newContent: string) {
+    if (!selectedEmbeddedEntry) return;
+
+    const index = embeddedBook.entries.findIndex(
+      (e) => e.id === selectedEmbeddedEntryId,
+    );
+    if (index !== -1) {
+      embeddedBook.entries[index] = {
+        ...embeddedBook.entries[index],
+        content: newContent,
+      };
     }
   }
 
   function handleAddEmbeddedEntry() {
     const newEntry: LorebookEntry = {
       id: crypto.randomUUID(),
-      keys: ['keyword'],
+      keys: ["keyword"],
       secondary_keys: [],
-      content: '',
+      content: "",
       comment: `Lore Entry ${embeddedBook.entries.length + 1}`,
       enabled: true,
       constant: false,
       selective: false,
       selective_logic: 0,
-      position: 'before_char',
+      position: "before_char",
       depth: 4,
       order: 100,
       case_sensitive: false,
@@ -148,25 +224,46 @@
   function handleDeleteEmbeddedEntry(id: string) {
     embeddedBook.entries = embeddedBook.entries.filter((e) => e.id !== id);
     if (selectedEmbeddedEntryId === id) {
-      selectedEmbeddedEntryId = embeddedBook.entries.length > 0 ? embeddedBook.entries[0].id : null;
+      selectedEmbeddedEntryId =
+        embeddedBook.entries.length > 0 ? embeddedBook.entries[0].id : null;
       if (selectedEmbeddedEntryId) selectEmbeddedEntry(selectedEmbeddedEntryId);
     }
   }
 
   function handleEmbeddedKeyChange() {
     if (!selectedEmbeddedEntry) return;
-    selectedEmbeddedEntry.keys = embeddedKeyStr
-      .split(',')
+    const parsedKeys = embeddedKeyStr
+      .split(",")
       .map((k) => k.trim())
       .filter(Boolean);
+
+    const index = embeddedBook.entries.findIndex(
+      (e) => e.id === selectedEmbeddedEntryId,
+    );
+    if (index !== -1) {
+      embeddedBook.entries[index] = {
+        ...embeddedBook.entries[index],
+        keys: parsedKeys,
+      };
+    }
   }
 
   function handleEmbeddedSecKeyChange() {
     if (!selectedEmbeddedEntry) return;
-    selectedEmbeddedEntry.secondary_keys = embeddedSecKeyStr
-      .split(',')
+    const secondary_keys = embeddedSecKeyStr
+      .split(",")
       .map((k) => k.trim())
       .filter(Boolean);
+
+    const index = embeddedBook.entries.findIndex(
+      (e) => e.id === selectedEmbeddedEntryId,
+    );
+    if (index !== -1) {
+      embeddedBook.entries[index] = {
+        ...embeddedBook.entries[index],
+        keys: secondary_keys,
+      };
+    }
   }
 
   function toggleLinkedLorebook(lbId: string) {
@@ -188,7 +285,7 @@
         }
       };
       reader.readAsDataURL(file);
-      target.value = '';
+      target.value = "";
     }
   }
 
@@ -197,7 +294,7 @@
   }
 
   function addAlternateGreeting() {
-    alternateGreetings = [...alternateGreetings, ''];
+    alternateGreetings = [...alternateGreetings, ""];
   }
 
   function removeAlternateGreeting(index: number) {
@@ -208,11 +305,11 @@
     if (!draftId) return;
     try {
       const bytes = await exportCardPng(draftId);
-      const blob = new Blob([new Uint8Array(bytes)], { type: 'image/png' });
+      const blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
+      const a = document.createElement("a");
       a.href = url;
-      a.download = `${draftCard.data.name || 'character'}_card.png`;
+      a.download = `${draftCard.data.name || "character"}_card.png`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -224,11 +321,11 @@
     if (!draftId) return;
     try {
       const jsonStr = await exportCardJson(draftId);
-      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const blob = new Blob([jsonStr], { type: "application/json" });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
+      const a = document.createElement("a");
       a.href = url;
-      a.download = `${draftCard.data.name || 'character'}_card.json`;
+      a.download = `${draftCard.data.name || "character"}_card.json`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -238,16 +335,18 @@
 
   function save() {
     if (!draftCard.data.name.trim()) {
-      alert('Please enter a character name.');
+      alert("Please enter a character name.");
       return;
     }
 
     draftCard.data.tags = tagInputStr
-      .split(',')
+      .split(",")
       .map((t) => t.trim())
       .filter(Boolean);
 
-    draftCard.data.alternate_greetings = alternateGreetings.filter((g) => g.trim().length > 0);
+    draftCard.data.alternate_greetings = alternateGreetings.filter(
+      (g) => g.trim().length > 0,
+    );
 
     // Save embedded character book
     if (hasEmbeddedBook) {
@@ -281,16 +380,40 @@
     on:change={handleAvatarUpload}
     style="display: none;"
   />
-  <div class="modal-backdrop" on:click={onClose} on:keydown={(e) => e.key === 'Escape' && onClose()} role="presentation">
-    <div class="modal-card" on:click|stopPropagation on:keydown|stopPropagation role="dialog" aria-modal="true" tabindex="-1">
+  <div
+    class="modal-backdrop"
+    on:click={onClose}
+    on:keydown={(e) => e.key === "Escape" && onClose()}
+    role="presentation"
+  >
+    <div
+      class="modal-card"
+      on:click|stopPropagation
+      on:keydown|stopPropagation
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+    >
       <div class="modal-header">
-        <h2>{draftId ? `Edit: ${draftCard.data.name || 'Character'}` : 'Create New Character'}</h2>
+        <h2>
+          {draftId
+            ? `Edit: ${draftCard.data.name || "Character"}`
+            : "Create New Character"}
+        </h2>
         <div class="header-actions">
           {#if draftId}
-            <button class="export-btn" on:click={handleExportPng} title="Export as PNG Character Card">
+            <button
+              class="export-btn"
+              on:click={handleExportPng}
+              title="Export as PNG Character Card"
+            >
               🖼️ Export PNG
             </button>
-            <button class="export-btn" on:click={handleExportJson} title="Export as JSON Card">
+            <button
+              class="export-btn"
+              on:click={handleExportJson}
+              title="Export as JSON Card"
+            >
               📄 Export JSON
             </button>
           {/if}
@@ -302,25 +425,27 @@
       <div class="tabs-row">
         <button
           class="tab-btn {activeTab === 'basic' ? 'active' : ''}"
-          on:click={() => (activeTab = 'basic')}
+          on:click={() => (activeTab = "basic")}
         >
           Basic Details
         </button>
         <button
           class="tab-btn {activeTab === 'greetings' ? 'active' : ''}"
-          on:click={() => (activeTab = 'greetings')}
+          on:click={() => (activeTab = "greetings")}
         >
           Greetings & Dialogue ({1 + alternateGreetings.length})
         </button>
         <button
           class="tab-btn {activeTab === 'lorebook' ? 'active' : ''}"
-          on:click={() => (activeTab = 'lorebook')}
+          on:click={() => (activeTab = "lorebook")}
         >
-          📖 Lorebook / World Info {hasEmbeddedBook ? `(${embeddedBook.entries.length})` : ''}
+          📖 Lorebook / World Info {hasEmbeddedBook
+            ? `(${embeddedBook.entries.length})`
+            : ""}
         </button>
         <button
           class="tab-btn {activeTab === 'advanced' ? 'active' : ''}"
-          on:click={() => (activeTab = 'advanced')}
+          on:click={() => (activeTab = "advanced")}
         >
           Advanced & System
         </button>
@@ -329,16 +454,20 @@
       <!-- Modal Body -->
       <div class="modal-body">
         <!-- Tab: Basic -->
-        {#if activeTab === 'basic'}
+        {#if activeTab === "basic"}
           <!-- Avatar & Name Row -->
           <div class="avatar-and-name">
             <div class="avatar-col">
               <div class="avatar-preview">
                 {#if draftAvatar}
-                  <img src={draftAvatar} alt="Character Avatar" class="avatar-img" />
+                  <img
+                    src={draftAvatar}
+                    alt="Character Avatar"
+                    class="avatar-img"
+                  />
                 {:else}
                   <div class="avatar-placeholder">
-                    {(draftCard.data.name || 'CH').slice(0, 2).toUpperCase()}
+                    {(draftCard.data.name || "CH").slice(0, 2).toUpperCase()}
                   </div>
                 {/if}
               </div>
@@ -351,7 +480,11 @@
                   Upload
                 </button>
                 {#if draftAvatar}
-                  <button class="btn-sm text-danger" type="button" on:click={removeAvatar}>
+                  <button
+                    class="btn-sm text-danger"
+                    type="button"
+                    on:click={removeAvatar}
+                  >
                     Remove
                   </button>
                 {/if}
@@ -383,7 +516,9 @@
           <!-- Description -->
           <div class="form-group">
             <label for="char-desc">
-              Description (Physical appearance, background, lore &mdash; maps to <code>&#123;&#123;description&#125;&#125;</code>)
+              Description (Physical appearance, background, lore &mdash; maps to <code
+                >&#123;&#123;description&#125;&#125;</code
+              >)
             </label>
             <textarea
               id="char-desc"
@@ -396,7 +531,9 @@
           <!-- Personality -->
           <div class="form-group">
             <label for="char-pers">
-              Personality (Traits, psychological profile, tone &mdash; maps to <code>&#123;&#123;personality&#125;&#125;</code>)
+              Personality (Traits, psychological profile, tone &mdash; maps to <code
+                >&#123;&#123;personality&#125;&#125;</code
+              >)
             </label>
             <textarea
               id="char-pers"
@@ -409,7 +546,9 @@
           <!-- Scenario -->
           <div class="form-group">
             <label for="char-scen">
-              Scenario / Setting (Current circumstances &mdash; maps to <code>&#123;&#123;scenario&#125;&#125;</code>)
+              Scenario / Setting (Current circumstances &mdash; maps to <code
+                >&#123;&#123;scenario&#125;&#125;</code
+              >)
             </label>
             <textarea
               id="char-scen"
@@ -421,7 +560,7 @@
         {/if}
 
         <!-- Tab: Greetings & Dialogue -->
-        {#if activeTab === 'greetings'}
+        {#if activeTab === "greetings"}
           <!-- First Message -->
           <div class="form-group">
             <label for="first-mes">
@@ -438,8 +577,14 @@
           <!-- Alternate Greetings -->
           <div class="form-group">
             <div class="section-header-row">
-              <span class="label-heading">Alternate Greetings ({alternateGreetings.length})</span>
-              <button class="btn-sm btn-accent" type="button" on:click={addAlternateGreeting}>
+              <span class="label-heading"
+                >Alternate Greetings ({alternateGreetings.length})</span
+              >
+              <button
+                class="btn-sm btn-accent"
+                type="button"
+                on:click={addAlternateGreeting}
+              >
                 + Add Alternate Greeting
               </button>
             </div>
@@ -448,7 +593,7 @@
               <p class="hint-text">No alternate greetings added yet.</p>
             {:else}
               <div class="alt-greetings-list">
-                {#each alternateGreetings as altGreeting, i}
+                {#each alternateGreetings as altGreeting, i (i)}
                   <div class="alt-greeting-card">
                     <div class="alt-header">
                       <span>Alternate Greeting #{i + 1}</span>
@@ -474,7 +619,9 @@
           <!-- Example Dialogue -->
           <div class="form-group">
             <label for="mes-example">
-              Example Dialogue (<code>&lt;START&gt;</code>, <code>&#123;&#123;user&#125;&#125;</code>, <code>&#123;&#123;char&#125;&#125;</code>)
+              Example Dialogue (<code>&lt;START&gt;</code>,
+              <code>&#123;&#123;user&#125;&#125;</code>,
+              <code>&#123;&#123;char&#125;&#125;</code>)
             </label>
             <textarea
               id="mes-example"
@@ -486,21 +633,34 @@
         {/if}
 
         <!-- Tab: Lorebook / World Info -->
-        {#if activeTab === 'lorebook'}
+        {#if activeTab === "lorebook"}
           <div class="lorebook-tab-content">
             <!-- Section 1: Linked Standalone Lorebooks -->
             <div class="section-box">
               <div class="section-box-header">
-                <span class="label-heading">🌐 Linked Global / Standalone Lorebooks</span>
-                <span class="section-hint">Attach existing world info books to this character</span>
+                <span class="label-heading"
+                  >🌐 Linked Global / Standalone Lorebooks</span
+                >
+                <span class="section-hint"
+                  >Attach existing world info books to this character</span
+                >
               </div>
 
               {#if availableLorebooks.length === 0}
-                <p class="hint-text">No standalone lorebooks found. You can create them in the Lorebooks manager.</p>
+                <p class="hint-text">
+                  No standalone lorebooks found. You can create them in the
+                  Lorebooks manager.
+                </p>
               {:else}
                 <div class="linked-lorebooks-grid">
-                  {#each availableLorebooks as book}
-                    <label class="linked-book-item {linkedLorebookIds.includes(book.id) ? 'checked' : ''}">
+                  {#each availableLorebooks as book (book.id)}
+                    <label
+                      class="linked-book-item {linkedLorebookIds.includes(
+                        book.id,
+                      )
+                        ? 'checked'
+                        : ''}"
+                    >
                       <input
                         type="checkbox"
                         checked={linkedLorebookIds.includes(book.id)}
@@ -508,7 +668,9 @@
                       />
                       <div class="linked-book-info">
                         <span class="linked-book-name">{book.name}</span>
-                        <span class="linked-book-entries">{book.entries.length} entries</span>
+                        <span class="linked-book-entries"
+                          >{book.entries.length} entries</span
+                        >
                       </div>
                     </label>
                   {/each}
@@ -521,16 +683,21 @@
               <div class="section-box-header">
                 <div class="header-with-toggle">
                   <label class="toggle-container">
-                    <input
-                      type="checkbox"
-                      bind:checked={hasEmbeddedBook}
-                    />
-                    <span class="toggle-label-text">Embedded Character Lorebook</span>
+                    <input type="checkbox" bind:checked={hasEmbeddedBook} />
+                    <span class="toggle-label-text"
+                      >Embedded Character Lorebook</span
+                    >
                   </label>
-                  <span class="section-hint">Saved directly inside character card PNG / JSON</span>
+                  <span class="section-hint"
+                    >Saved directly inside character card PNG / JSON</span
+                  >
                 </div>
                 {#if hasEmbeddedBook}
-                  <button class="btn-sm btn-accent" type="button" on:click={handleAddEmbeddedEntry}>
+                  <button
+                    class="btn-sm btn-accent"
+                    type="button"
+                    on:click={handleAddEmbeddedEntry}
+                  >
                     + Add Entry
                   </button>
                 {/if}
@@ -543,25 +710,36 @@
                     {#if embeddedBook.entries.length === 0}
                       <div class="empty-entries">
                         <p>No embedded lorebook entries yet.</p>
-                        <button class="btn-sm btn-accent" type="button" on:click={handleAddEmbeddedEntry}>
+                        <button
+                          class="btn-sm btn-accent"
+                          type="button"
+                          on:click={handleAddEmbeddedEntry}
+                        >
                           + Add Entry
                         </button>
                       </div>
                     {:else}
                       {#each embeddedBook.entries as entry (entry.id)}
                         <div
-                          class="embedded-entry-pill {entry.id === selectedEmbeddedEntryId ? 'active' : ''}"
+                          class="embedded-entry-pill {entry.id ===
+                          selectedEmbeddedEntryId
+                            ? 'active'
+                            : ''}"
                           on:click={() => selectEmbeddedEntry(entry.id)}
-                          on:keydown={(e) => e.key === 'Enter' && selectEmbeddedEntry(entry.id)}
+                          on:keydown={(e) =>
+                            e.key === "Enter" && selectEmbeddedEntry(entry.id)}
                           role="button"
                           tabindex="0"
                         >
-                          <span class="entry-title-text">{entry.comment || 'Untitled Entry'}</span>
+                          <span class="entry-title-text"
+                            >{entry.comment || "Untitled Entry"}</span
+                          >
                           <span class="entry-pos-tag">{entry.position}</span>
                           <button
                             class="del-entry-btn"
                             type="button"
-                            on:click|stopPropagation={() => handleDeleteEmbeddedEntry(entry.id)}
+                            on:click|stopPropagation={() =>
+                              handleDeleteEmbeddedEntry(entry.id)}
                             title="Delete Entry"
                           >
                             ✕
@@ -580,26 +758,50 @@
                           <input
                             id="embed-comment"
                             type="text"
-                            bind:value={selectedEmbeddedEntry.comment}
+                            value={selectedEmbeddedEntry?.comment ?? ""}
+                            on:input={(e) =>
+                              handleCommentChange(e.currentTarget.value)}
                             placeholder="e.g. Tavern History, Magic Sword"
                           />
                         </div>
                         <div class="form-group">
                           <label for="embed-position">Position</label>
-                          <select id="embed-position" bind:value={selectedEmbeddedEntry.position}>
-                            <option value="before_char">Before Character Definition</option>
-                            <option value="after_char">After Character Definition</option>
-                            <option value="before_scenario">Before Scenario</option>
-                            <option value="after_scenario">After Scenario</option>
-                            <option value="top_system">Top of System Prompt</option>
-                            <option value="bottom_system">Bottom of System Prompt</option>
-                            <option value="at_depth">In Chat History at Depth</option>
+                          <select
+                            id="embed-position"
+                            on:change={(e) =>
+                              handlePositionChange(
+                                e.currentTarget.value as LorebookPosition,
+                              )}
+                          >
+                            <option value="before_char"
+                              >Before Character Definition</option
+                            >
+                            <option value="after_char"
+                              >After Character Definition</option
+                            >
+                            <option value="before_scenario"
+                              >Before Scenario</option
+                            >
+                            <option value="after_scenario"
+                              >After Scenario</option
+                            >
+                            <option value="top_system"
+                              >Top of System Prompt</option
+                            >
+                            <option value="bottom_system"
+                              >Bottom of System Prompt</option
+                            >
+                            <option value="at_depth"
+                              >In Chat History at Depth</option
+                            >
                           </select>
                         </div>
                       </div>
 
                       <div class="form-group">
-                        <label for="embed-keys">Trigger Keywords (comma separated)</label>
+                        <label for="embed-keys"
+                          >Trigger Keywords (comma separated)</label
+                        >
                         <input
                           id="embed-keys"
                           type="text"
@@ -614,14 +816,18 @@
                         <label class="checkbox-label">
                           <input
                             type="checkbox"
-                            bind:checked={selectedEmbeddedEntry.constant}
+                            checked={selectedEmbeddedEntry?.enabled ?? false}
+                            on:input={(e) =>
+                              handleConstantChange(e.currentTarget.checked)}
                           />
                           <span>Constant (Always Active)</span>
                         </label>
                         <label class="checkbox-label">
                           <input
                             type="checkbox"
-                            bind:checked={selectedEmbeddedEntry.selective}
+                            checked={selectedEmbeddedEntry.selective ?? false}
+                            on:change={(e) =>
+                              handleSelectiveChange(e.currentTarget.checked)}
                             disabled={selectedEmbeddedEntry.constant}
                           />
                           <span>Selective Logic</span>
@@ -646,7 +852,9 @@
                         <textarea
                           id="embed-content"
                           rows="4"
-                          bind:value={selectedEmbeddedEntry.content}
+                          value={selectedEmbeddedEntry?.content ?? ""}
+                          on:input={(e) =>
+                            handleContentChange(e.currentTarget.value)}
                           placeholder="Text to inject when triggered..."
                         ></textarea>
                       </div>
@@ -659,12 +867,10 @@
         {/if}
 
         <!-- Tab: Advanced & System -->
-        {#if activeTab === 'advanced'}
+        {#if activeTab === "advanced"}
           <!-- Custom System Prompt -->
           <div class="form-group">
-            <label for="char-sys">
-              Character System Prompt Override
-            </label>
+            <label for="char-sys"> Character System Prompt Override </label>
             <textarea
               id="char-sys"
               rows="4"
@@ -676,7 +882,8 @@
           <!-- Post-history instructions -->
           <div class="form-group">
             <label for="char-post">
-              Post-History Instructions (Jailbreak / Reminders / Formatting Rules)
+              Post-History Instructions (Jailbreak / Reminders / Formatting
+              Rules)
             </label>
             <textarea
               id="char-post"
@@ -703,7 +910,7 @@
       <div class="modal-footer">
         <button class="btn-cancel" on:click={onClose}>Cancel</button>
         <button class="btn-save" on:click={save}>
-          {draftId ? 'Save Changes' : 'Create Character'}
+          {draftId ? "Save Changes" : "Create Character"}
         </button>
       </div>
     </div>
@@ -958,7 +1165,7 @@
     font-weight: 700;
     color: #cdd6f4;
   }
-  .toggle-container input[type='checkbox'] {
+  .toggle-container input[type="checkbox"] {
     accent-color: #89b4fa;
     width: 16px;
     height: 16px;

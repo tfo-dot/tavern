@@ -1,11 +1,11 @@
 <script lang="ts">
-  import type { UserPersona } from '../types';
+  import type { UserPersona } from "../types";
   import {
     getAllUserPersonas,
     saveUserPersona,
     deleteUserPersona,
     setActiveUserPersona,
-  } from '../api';
+  } from "../api";
 
   export let isOpen = false;
   export let activePersona: UserPersona;
@@ -13,29 +13,32 @@
   export let onClose: () => void;
 
   let personas: UserPersona[] = [];
-  let selectedPersonaId: string = '';
+  let selectedPersonaId: string = "";
   let draft: UserPersona;
   let fileInputEl: HTMLInputElement;
   let isSaving = false;
-  let wasOpen = false;
-  $: if (isOpen && !wasOpen) {
-    wasOpen = true;
+  
+  $: if (isOpen) {
     loadPersonas();
-  } else if (!isOpen) {
-    wasOpen = false;
   }
+
   async function loadPersonas() {
     try {
       personas = await getAllUserPersonas();
-      if (!selectedPersonaId || !personas.some((p) => p.id === selectedPersonaId)) {
-        selectedPersonaId = activePersona?.id || personas[0]?.id || 'default_user';
+      if (
+        !selectedPersonaId ||
+        !personas.some((p) => p.id === selectedPersonaId)
+      ) {
+        selectedPersonaId =
+          activePersona?.id || personas[0]?.id || "default_user";
       }
-      const current = personas.find((p) => p.id === selectedPersonaId) || personas[0];
+      const current =
+        personas.find((p) => p.id === selectedPersonaId) || personas[0];
       if (current) {
         draft = JSON.parse(JSON.stringify(current));
       }
     } catch (e) {
-      console.error('Failed to load personas:', e);
+      console.error("Failed to load personas:", e);
     }
   }
 
@@ -49,7 +52,7 @@
     const newP: UserPersona = {
       id: newId,
       name: `Persona ${personas.length + 1}`,
-      description: '',
+      description: "",
       avatar_data_url: null,
     };
     personas = [...personas, newP];
@@ -68,7 +71,7 @@
         }
       };
       reader.readAsDataURL(file);
-      target.value = '';
+      target.value = "";
     }
   }
 
@@ -82,16 +85,16 @@
       activePersona = activated;
       onPersonaChanged(activated);
     } catch (e) {
-      console.error('Failed to set active persona:', e);
+      console.error("Failed to set active persona:", e);
     }
   }
 
   async function handleDeletePersona(id: string) {
     if (personas.length <= 1) {
-      alert('You must keep at least one persona.');
+      alert("You must keep at least one persona.");
       return;
     }
-    if (!confirm('Delete this user persona?')) return;
+    if (!confirm("Delete this user persona?")) return;
 
     try {
       await deleteUserPersona(id);
@@ -108,7 +111,7 @@
   }
 
   async function save() {
-    if (!draft.name.trim()) draft.name = 'User';
+    if (!draft.name.trim()) draft.name = "User";
     isSaving = true;
     try {
       const saved = await saveUserPersona(draft);
@@ -143,7 +146,7 @@
   <div
     class="modal-backdrop"
     on:click={onClose}
-    on:keydown={(e) => e.key === 'Escape' && onClose()}
+    on:keydown={(e) => e.key === "Escape" && onClose()}
     role="presentation"
   >
     <div
@@ -157,7 +160,9 @@
       <div class="modal-header">
         <div class="header-title-row">
           <h2>👤 User Personas</h2>
-          <span class="header-sub">Manage and switch your roleplay identities</span>
+          <span class="header-sub"
+            >Manage and switch your roleplay identities</span
+          >
         </div>
         <button class="close-btn" on:click={onClose}>✕</button>
       </div>
@@ -167,20 +172,28 @@
         <div class="persona-sidebar">
           <div class="persona-sidebar-header">
             <span class="list-label">Your Personas</span>
-            <button class="new-persona-btn" on:click={createNewPersona}>+ New</button>
+            <button class="new-persona-btn" on:click={createNewPersona}
+              >+ New</button
+            >
           </div>
 
           <div class="persona-list">
-            {#each personas as p}
+            {#each personas as p (p.id)}
               <div
-                class="persona-item {p.id === selectedPersonaId ? 'selected' : ''}"
+                class="persona-item {p.id === selectedPersonaId
+                  ? 'selected'
+                  : ''}"
                 on:click={() => selectPersona(p)}
                 role="button"
                 tabindex="0"
-                on:keydown={(e) => e.key === 'Enter' && selectPersona(p)}
+                on:keydown={(e) => e.key === "Enter" && selectPersona(p)}
               >
                 {#if p.avatar_data_url}
-                  <img src={p.avatar_data_url} alt={p.name} class="p-item-avatar" />
+                  <img
+                    src={p.avatar_data_url}
+                    alt={p.name}
+                    class="p-item-avatar"
+                  />
                 {:else}
                   <div class="p-item-avatar-placeholder">
                     {p.name.slice(0, 2).toUpperCase()}
@@ -203,7 +216,9 @@
           <!-- Active Status Bar -->
           <div class="active-status-bar">
             {#if draft.id === activePersona?.id}
-              <span class="current-active-label">✓ Currently Active Persona</span>
+              <span class="current-active-label"
+                >✓ Currently Active Persona</span
+              >
             {:else}
               <button
                 class="set-active-btn"
@@ -230,10 +245,14 @@
           <div class="avatar-section">
             <div class="avatar-preview-wrap">
               {#if draft.avatar_data_url}
-                <img src={draft.avatar_data_url} alt="User Avatar" class="avatar-img" />
+                <img
+                  src={draft.avatar_data_url}
+                  alt="User Avatar"
+                  class="avatar-img"
+                />
               {:else}
                 <div class="avatar-placeholder">
-                  {(draft.name || 'US').slice(0, 2).toUpperCase()}
+                  {(draft.name || "US").slice(0, 2).toUpperCase()}
                 </div>
               {/if}
             </div>
@@ -246,7 +265,11 @@
                 Upload Avatar
               </button>
               {#if draft.avatar_data_url}
-                <button class="btn-remove-avatar" type="button" on:click={removeAvatar}>
+                <button
+                  class="btn-remove-avatar"
+                  type="button"
+                  on:click={removeAvatar}
+                >
                   Remove
                 </button>
               {/if}
@@ -255,7 +278,11 @@
 
           <!-- Name -->
           <div class="form-group">
-            <label for="username">Persona Name (substituted for <code>&#123;&#123;user&#125;&#125;</code>)</label>
+            <label for="username"
+              >Persona Name (substituted for <code
+                >&#123;&#123;user&#125;&#125;</code
+              >)</label
+            >
             <input
               id="username"
               type="text"
@@ -267,7 +294,9 @@
           <!-- Description -->
           <div class="form-group">
             <label for="userdesc">
-              Persona Description (substituted for <code>&#123;&#123;persona&#125;&#125;</code>)
+              Persona Description (substituted for <code
+                >&#123;&#123;persona&#125;&#125;</code
+              >)
             </label>
             <textarea
               id="userdesc"
@@ -282,7 +311,7 @@
       <div class="modal-footer">
         <button class="btn-cancel" on:click={onClose}>Cancel</button>
         <button class="btn-save" on:click={save} disabled={isSaving}>
-          {isSaving ? 'Saving...' : 'Save Persona'}
+          {isSaving ? "Saving..." : "Save Persona"}
         </button>
       </div>
     </div>
@@ -577,7 +606,7 @@
     color: #a6adc8;
   }
 
-  input[type='text'],
+  input[type="text"],
   textarea {
     background: #181825;
     border: 1px solid #45475a;

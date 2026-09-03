@@ -1,18 +1,20 @@
 <script lang="ts">
-  import { formatCreatorNotes } from '../formatter';
+  import { formatCreatorNotes } from "../formatter";
 
-  export let characterName = 'Character';
-  export let creatorNotes = '';
+  export let characterName = "Character";
+  export let creatorNotes = "";
   export let characterAvatar: string | null = null;
   export let isOpen = false;
-  export let onOpenImagePreview: ((src: string, alt: string) => void) | undefined = undefined;
+  export let onOpenImagePreview:
+    | ((src: string, alt: string) => void)
+    | undefined = undefined;
   export let onClose: () => void;
 
   $: formattedHtml = formatCreatorNotes(creatorNotes);
 
   function handleContentClick(e: MouseEvent) {
     const target = e.target as HTMLElement;
-    if (target && target.tagName === 'IMG') {
+    if (target && target.tagName === "IMG") {
       const img = target as HTMLImageElement;
       if (img.src && onOpenImagePreview) {
         onOpenImagePreview(img.src, img.alt || `${characterName} Notes Image`);
@@ -25,7 +27,7 @@
   <div
     class="modal-backdrop"
     on:click={onClose}
-    on:keydown={(e) => e.key === 'Escape' && onClose()}
+    on:keydown={(e) => e.key === "Escape" && onClose()}
     role="presentation"
   >
     <div
@@ -39,7 +41,11 @@
       <div class="modal-header">
         <div class="header-title-group">
           {#if characterAvatar}
-            <img src={characterAvatar} alt={characterName} class="header-avatar" />
+            <img
+              src={characterAvatar}
+              alt={characterName}
+              class="header-avatar"
+            />
           {/if}
           <div class="title-details">
             <h2>📜 Creator Notes</h2>
@@ -60,6 +66,7 @@
             on:click={handleContentClick}
             role="presentation"
           >
+            <!-- eslint-disable-next-line svelte/no-at-html-tags -->
             {@html formattedHtml}
           </div>
         {/if}

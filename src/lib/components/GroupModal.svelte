@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Character, Group, GroupMember, TurnMode } from '../types';
+  import type { Character, Group, GroupMember, TurnMode } from "../types";
 
   export let group: Group | null = null;
   export let characters: Character[] = [];
@@ -9,40 +9,38 @@
   export let onClose: () => void;
 
   let draftId: string | null = null;
-  let draftName = '';
-  let draftDescription = '';
+  let draftName = "";
+  let draftDescription = "";
   let draftAvatar: string | null = null;
-  let draftTurnMode: TurnMode = 'Natural';
+  let draftTurnMode: TurnMode = "Natural";
   let draftAllowSelfResponses = false;
   let draftAutoMode = true;
   let draftMembers: GroupMember[] = [];
-  let memberSearch = '';
+  let memberSearch = "";
   let fileInputEl: HTMLInputElement;
 
-  let wasOpen = false;
-  $: if (isOpen && !wasOpen) {
-    wasOpen = true;
+  $: if (isOpen) {
     initDraft();
-  } else if (!isOpen) {
-    wasOpen = false;
   }
 
   function initDraft() {
     if (group) {
       draftId = group.id;
       draftName = group.name;
-      draftDescription = group.description || '';
+      draftDescription = group.description || "";
       draftAvatar = group.avatar_data_url || null;
-      draftTurnMode = group.turn_mode || 'Natural';
+      draftTurnMode = group.turn_mode || "Natural";
       draftAllowSelfResponses = group.allow_self_responses ?? false;
       draftAutoMode = group.auto_mode ?? true;
-      draftMembers = group.members ? JSON.parse(JSON.stringify(group.members)) : [];
+      draftMembers = group.members
+        ? JSON.parse(JSON.stringify(group.members))
+        : [];
     } else {
       draftId = null;
-      draftName = '';
-      draftDescription = '';
+      draftName = "";
+      draftDescription = "";
       draftAvatar = null;
-      draftTurnMode = 'Natural';
+      draftTurnMode = "Natural";
       draftAllowSelfResponses = false;
       draftAutoMode = true;
       draftMembers = [];
@@ -62,24 +60,27 @@
     if (idx >= 0) {
       draftMembers = draftMembers.filter((m) => m.character_id !== id);
     } else {
-      draftMembers = [...draftMembers, { character_id: id, enabled: true, mute: false }];
+      draftMembers = [
+        ...draftMembers,
+        { character_id: id, enabled: true, mute: false },
+      ];
     }
   }
 
   function toggleEnabled(id: string) {
     draftMembers = draftMembers.map((m) =>
-      m.character_id === id ? { ...m, enabled: !m.enabled } : m
+      m.character_id === id ? { ...m, enabled: !m.enabled } : m,
     );
   }
 
   function toggleMute(id: string) {
     draftMembers = draftMembers.map((m) =>
-      m.character_id === id ? { ...m, mute: !m.mute } : m
+      m.character_id === id ? { ...m, mute: !m.mute } : m,
     );
   }
 
-  function moveMember(index: number, direction: 'up' | 'down') {
-    const newIdx = direction === 'up' ? index - 1 : index + 1;
+  function moveMember(index: number, direction: "up" | "down") {
+    const newIdx = direction === "up" ? index - 1 : index + 1;
     if (newIdx < 0 || newIdx >= draftMembers.length) return;
     const updated = [...draftMembers];
     const [moved] = updated.splice(index, 1);
@@ -118,7 +119,11 @@
   }
 
   function handleDelete() {
-    if (draftId && onDelete && confirm(`Delete group "${draftName}" and its chats?`)) {
+    if (
+      draftId &&
+      onDelete &&
+      confirm(`Delete group "${draftName}" and its chats?`)
+    ) {
       onDelete(draftId);
       onClose();
     }
@@ -149,9 +154,11 @@
     >
       <header class="modal-header">
         <h2 id="modal-title" class="title">
-          {group ? 'Edit Roleplay Group' : 'Create Roleplay Group'}
+          {group ? "Edit Roleplay Group" : "Create Roleplay Group"}
         </h2>
-        <button class="close-btn" on:click={onClose} title="Close modal">✕</button>
+        <button class="close-btn" on:click={onClose} title="Close modal"
+          >✕</button
+        >
       </header>
 
       <div class="modal-body">
@@ -193,7 +200,9 @@
 
           <div class="fields-col">
             <div class="form-group">
-              <label for="group-name">Group Name <span class="req">*</span></label>
+              <label for="group-name"
+                >Group Name <span class="req">*</span></label
+              >
               <input
                 id="group-name"
                 type="text"
@@ -205,7 +214,9 @@
             </div>
 
             <div class="form-group">
-              <label for="group-desc">Group Description / Scenario Context</label>
+              <label for="group-desc"
+                >Group Description / Scenario Context</label
+              >
               <textarea
                 id="group-desc"
                 bind:value={draftDescription}
@@ -225,7 +236,11 @@
           </p>
 
           <div class="turn-modes-grid">
-            <label class="turn-mode-card {draftTurnMode === 'Natural' ? 'selected' : ''}">
+            <label
+              class="turn-mode-card {draftTurnMode === 'Natural'
+                ? 'selected'
+                : ''}"
+            >
               <input
                 type="radio"
                 name="turn-mode"
@@ -238,12 +253,17 @@
                   <strong>Natural / Sequential</strong>
                 </div>
                 <p class="mode-desc">
-                  Characters respond in order round-robin (Char 1 → Char 2 → Char 3).
+                  Characters respond in order round-robin (Char 1 → Char 2 →
+                  Char 3).
                 </p>
               </div>
             </label>
 
-            <label class="turn-mode-card {draftTurnMode === 'Manual' ? 'selected' : ''}">
+            <label
+              class="turn-mode-card {draftTurnMode === 'Manual'
+                ? 'selected'
+                : ''}"
+            >
               <input
                 type="radio"
                 name="turn-mode"
@@ -256,12 +276,17 @@
                   <strong>Manual Selection</strong>
                 </div>
                 <p class="mode-desc">
-                  You trigger specific characters on demand via the Turn Bar or message buttons.
+                  You trigger specific characters on demand via the Turn Bar or
+                  message buttons.
                 </p>
               </div>
             </label>
 
-            <label class="turn-mode-card {draftTurnMode === 'Random' ? 'selected' : ''}">
+            <label
+              class="turn-mode-card {draftTurnMode === 'Random'
+                ? 'selected'
+                : ''}"
+            >
               <input
                 type="radio"
                 name="turn-mode"
@@ -284,13 +309,15 @@
             <label class="toggle-label">
               <input type="checkbox" bind:checked={draftAutoMode} />
               <span>
-                <strong>Auto-generate Turn</strong> — Trigger AI response automatically after sending a message
+                <strong>Auto-generate Turn</strong> — Trigger AI response automatically
+                after sending a message
               </span>
             </label>
             <label class="toggle-label">
               <input type="checkbox" bind:checked={draftAllowSelfResponses} />
               <span>
-                <strong>Allow Consecutive Turns</strong> — Permit the same character to respond twice in a row
+                <strong>Allow Consecutive Turns</strong> — Permit the same character
+                to respond twice in a row
               </span>
             </label>
           </div>
@@ -313,23 +340,38 @@
           {#if draftMembers.length > 0}
             <div class="selected-members-list">
               <span class="list-subtitle">Turn Sequence Order:</span>
-              {#each draftMembers as member, idx}
+              {#each draftMembers as member, idx (member.character_id)}
                 {@const char = getCharacter(member.character_id)}
-                <div class="member-item-row {!member.enabled ? 'disabled' : ''} {member.mute ? 'muted' : ''}">
+                <div
+                  class="member-item-row {!member.enabled
+                    ? 'disabled'
+                    : ''} {member.mute ? 'muted' : ''}"
+                >
                   <span class="order-num">#{idx + 1}</span>
 
                   <div class="member-avatar">
                     {#if char?.avatar_data_url}
-                      <img src={char.avatar_data_url} alt={char.card.data.name} />
+                      <img
+                        src={char.avatar_data_url}
+                        alt={char.card.data.name}
+                      />
                     {:else}
-                      <span class="char-init">{(char?.card.data.name || '?').slice(0, 2).toUpperCase()}</span>
+                      <span class="char-init"
+                        >{(char?.card.data.name || "?")
+                          .slice(0, 2)
+                          .toUpperCase()}</span
+                      >
                     {/if}
                   </div>
 
                   <div class="member-info">
-                    <span class="member-name">{char?.card.data.name || 'Unknown Character'}</span>
+                    <span class="member-name"
+                      >{char?.card.data.name || "Unknown Character"}</span
+                    >
                     {#if char?.card.data.personality}
-                      <span class="member-snippet">{char.card.data.personality}</span>
+                      <span class="member-snippet"
+                        >{char.card.data.personality}</span
+                      >
                     {/if}
                   </div>
 
@@ -338,25 +380,31 @@
                       type="button"
                       class="pill-toggle {member.enabled ? 'active' : ''}"
                       on:click={() => toggleEnabled(member.character_id)}
-                      title={member.enabled ? 'Enabled in turns' : 'Disabled / Inactive'}
+                      title={member.enabled
+                        ? "Enabled in turns"
+                        : "Disabled / Inactive"}
                     >
-                      {member.enabled ? 'Active' : 'Inactive'}
+                      {member.enabled ? "Active" : "Inactive"}
                     </button>
 
                     <button
                       type="button"
-                      class="pill-toggle mute-toggle {member.mute ? 'active' : ''}"
+                      class="pill-toggle mute-toggle {member.mute
+                        ? 'active'
+                        : ''}"
                       on:click={() => toggleMute(member.character_id)}
-                      title={member.mute ? 'Muted (Listening only)' : 'Can speak in auto turns'}
+                      title={member.mute
+                        ? "Muted (Listening only)"
+                        : "Can speak in auto turns"}
                     >
-                      {member.mute ? '🔇 Muted' : '🔊 Speaking'}
+                      {member.mute ? "🔇 Muted" : "🔊 Speaking"}
                     </button>
 
                     <button
                       type="button"
                       class="reorder-btn"
                       disabled={idx === 0}
-                      on:click={() => moveMember(idx, 'up')}
+                      on:click={() => moveMember(idx, "up")}
                       title="Move up in turn order"
                     >
                       ▲
@@ -365,7 +413,7 @@
                       type="button"
                       class="reorder-btn"
                       disabled={idx === draftMembers.length - 1}
-                      on:click={() => moveMember(idx, 'down')}
+                      on:click={() => moveMember(idx, "down")}
                       title="Move down in turn order"
                     >
                       ▼
@@ -385,7 +433,8 @@
             </div>
           {:else}
             <div class="empty-members-hint">
-              <span class="hint-icon">⚠️</span> No members selected yet. Click characters below to add them to this group.
+              <span class="hint-icon">⚠️</span> No members selected yet. Click characters
+              below to add them to this group.
             </div>
           {/if}
 
@@ -402,7 +451,7 @@
             </div>
 
             <div class="chars-picker-grid">
-              {#each filteredAvailableChars as c}
+              {#each filteredAvailableChars as c (c.id)}
                 {@const isSelected = isMemberSelected(c.id)}
                 <button
                   type="button"
@@ -419,7 +468,7 @@
                   <div class="char-pick-meta">
                     <span class="char-pick-name">{c.card.data.name}</span>
                     <span class="char-pick-status">
-                      {isSelected ? '✓ Added' : '+ Add'}
+                      {isSelected ? "✓ Added" : "+ Add"}
                     </span>
                   </div>
                 </button>

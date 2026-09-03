@@ -1,6 +1,12 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
-  import type { Lorebook, LorebookEntry, LorebookPosition, SelectiveLogic, AppSettings } from '../types';
+  import { onMount } from "svelte";
+  import type {
+    Lorebook,
+    LorebookEntry,
+    LorebookPosition,
+    SelectiveLogic,
+    AppSettings,
+  } from "../types";
   import {
     getAllLorebooks,
     saveLorebook,
@@ -8,7 +14,10 @@
     importLorebook,
     exportLorebookJson,
     saveSettings,
-  } from '../api';
+  } from "../api";
+  import {
+    SvelteSet
+  } from 'svelte/reactivity';
 
   export let isOpen = false;
   export let settings: AppSettings | null = null;
@@ -18,18 +27,19 @@
   let lorebooks: Lorebook[] = [];
   let activeLorebookId: string | null = null;
   let selectedEntryId: string | null = null;
-  let searchQuery = '';
+  let searchQuery = "";
   let fileInputEl: HTMLInputElement;
 
   // Working drafts
   let activeLorebook: Lorebook | null = null;
   let selectedEntry: LorebookEntry | null = null;
-  let keyInputStr = '';
-  let secKeyInputStr = '';
+  let keyInputStr = "";
+  let secKeyInputStr = "";
   let isSaving = false;
 
   $: activeLorebook = lorebooks.find((b) => b.id === activeLorebookId) || null;
-  $: selectedEntry = activeLorebook?.entries.find((e) => e.id === selectedEntryId) || null;
+  $: selectedEntry =
+    activeLorebook?.entries.find((e) => e.id === selectedEntryId) || null;
 
   $: filteredEntries = (activeLorebook?.entries || []).filter((entry) => {
     if (!searchQuery.trim()) return true;
@@ -37,18 +47,18 @@
     const commentMatch = entry.comment.toLowerCase().includes(q);
     const contentMatch = entry.content.toLowerCase().includes(q);
     const keysMatch = entry.keys.some((k) => k.toLowerCase().includes(q));
-    const secKeysMatch = entry.secondary_keys.some((k) => k.toLowerCase().includes(q));
+    const secKeysMatch = entry.secondary_keys.some((k) =>
+      k.toLowerCase().includes(q),
+    );
     return commentMatch || contentMatch || keysMatch || secKeysMatch;
   });
 
-  $: isGlobalActive = (settings?.global_lorebook_ids || []).includes(activeLorebookId || '');
+  $: isGlobalActive = (settings?.global_lorebook_ids || []).includes(
+    activeLorebookId || "",
+  );
 
-  let wasOpen = false;
-  $: if (isOpen && !wasOpen) {
-    wasOpen = true;
+  $: if (isOpen) {
     loadAllLorebooks();
-  } else if (!isOpen) {
-    wasOpen = false;
   }
 
   async function loadAllLorebooks() {
@@ -56,7 +66,10 @@
       lorebooks = await getAllLorebooks();
       if (!activeLorebookId && lorebooks.length > 0) {
         selectLorebook(lorebooks[0].id);
-      } else if (activeLorebookId && !lorebooks.some((b) => b.id === activeLorebookId)) {
+      } else if (
+        activeLorebookId &&
+        !lorebooks.some((b) => b.id === activeLorebookId)
+      ) {
         activeLorebookId = lorebooks.length > 0 ? lorebooks[0].id : null;
         if (activeLorebookId) selectLorebook(activeLorebookId);
       } else if (activeLorebookId) {
@@ -66,7 +79,7 @@
         }
       }
     } catch (e) {
-      console.error('Failed to load lorebooks:', e);
+      console.error("Failed to load lorebooks:", e);
     }
   }
 
@@ -84,16 +97,16 @@
     selectedEntryId = id;
     const entry = activeLorebook?.entries.find((e) => e.id === id);
     if (entry) {
-      keyInputStr = (entry.keys || []).join(', ');
-      secKeyInputStr = (entry.secondary_keys || []).join(', ');
+      keyInputStr = (entry.keys || []).join(", ");
+      secKeyInputStr = (entry.secondary_keys || []).join(", ");
     }
   }
 
   async function handleCreateLorebook() {
     const newBook: Lorebook = {
       id: crypto.randomUUID(),
-      name: 'New Lorebook',
-      description: '',
+      name: "New Lorebook",
+      description: "",
       scan_depth: 2,
       token_budget: 2048,
       recursive_scanning: false,
@@ -112,15 +125,15 @@
     if (!activeLorebook) return;
     const newEntry: LorebookEntry = {
       id: crypto.randomUUID(),
-      keys: ['keyword'],
+      keys: ["keyword"],
       secondary_keys: [],
-      content: '',
+      content: "",
       comment: `New Entry ${activeLorebook.entries.length + 1}`,
       enabled: true,
       constant: false,
       selective: false,
       selective_logic: 0,
-      position: 'before_char',
+      position: "before_char",
       depth: 4,
       order: 100,
       case_sensitive: false,
@@ -138,7 +151,8 @@
     activeLorebook.entries = activeLorebook.entries.filter((e) => e.id !== id);
     await persistActiveLorebook();
     if (selectedEntryId === id) {
-      selectedEntryId = activeLorebook.entries.length > 0 ? activeLorebook.entries[0].id : null;
+      selectedEntryId =
+        activeLorebook.entries.length > 0 ? activeLorebook.entries[0].id : null;
       if (selectedEntryId) selectEntry(selectedEntryId);
     }
   }
@@ -189,7 +203,7 @@
 
   async function handleToggleGlobal() {
     if (!settings || !activeLorebookId) return;
-    const current = new Set(settings.global_lorebook_ids || []);
+    const current = new SvelteSet(settings.global_lorebook_ids || []);
     if (current.has(activeLorebookId)) {
       current.delete(activeLorebookId);
     } else {
@@ -217,7 +231,7 @@
         lorebooks[idx] = { ...activeLorebook };
       }
     } catch (e) {
-      console.error('Failed to save lorebook:', e);
+      console.error("Failed to save lorebook:", e);
     } finally {
       isSaving = false;
     }
@@ -226,7 +240,7 @@
   function handleKeyChange() {
     if (!selectedEntry) return;
     selectedEntry.keys = keyInputStr
-      .split(',')
+      .split(",")
       .map((k) => k.trim())
       .filter(Boolean);
     persistActiveLorebook();
@@ -235,7 +249,7 @@
   function handleSecKeyChange() {
     if (!selectedEntry) return;
     selectedEntry.secondary_keys = secKeyInputStr
-      .split(',')
+      .split(",")
       .map((k) => k.trim())
       .filter(Boolean);
     persistActiveLorebook();
@@ -253,7 +267,7 @@
       } catch (err) {
         alert(`Import failed: ${err}`);
       } finally {
-        target.value = '';
+        target.value = "";
       }
     }
   }
@@ -262,11 +276,11 @@
     if (!activeLorebook) return;
     try {
       const jsonStr = await exportLorebookJson(activeLorebook.id);
-      const blob = new Blob([jsonStr], { type: 'application/json' });
+      const blob = new Blob([jsonStr], { type: "application/json" });
       const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
+      const a = document.createElement("a");
       a.href = url;
-      a.download = `${activeLorebook.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}_lorebook.json`;
+      a.download = `${activeLorebook.name.toLowerCase().replace(/[^a-z0-9]/g, "_")}_lorebook.json`;
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
@@ -291,7 +305,7 @@
   <div
     class="modal-backdrop"
     on:click={onClose}
-    on:keydown={(e) => e.key === 'Escape' && onClose()}
+    on:keydown={(e) => e.key === "Escape" && onClose()}
     role="presentation"
   >
     <div
@@ -306,10 +320,16 @@
       <div class="modal-header">
         <div class="header-left">
           <h2>📖 World Info & Lorebooks</h2>
-          <span class="header-subtitle">SillyTavern compatible dynamic context injector</span>
+          <span class="header-subtitle"
+            >SillyTavern compatible dynamic context injector</span
+          >
         </div>
         <div class="header-actions">
-          <button class="action-btn import-btn" on:click={() => fileInputEl?.click()} title="Import JSON or PNG Card with embedded Lorebook">
+          <button
+            class="action-btn import-btn"
+            on:click={() => fileInputEl?.click()}
+            title="Import JSON or PNG Card with embedded Lorebook"
+          >
             📥 Import
           </button>
           <button class="action-btn new-btn" on:click={handleCreateLorebook}>
@@ -331,14 +351,19 @@
             {#if lorebooks.length === 0}
               <div class="empty-col">
                 <p>No lorebooks yet.</p>
-                <button class="link-btn" on:click={handleCreateLorebook}>+ Create one</button>
+                <button class="link-btn" on:click={handleCreateLorebook}
+                  >+ Create one</button
+                >
               </div>
             {:else}
-              {#each lorebooks as book}
+              {#each lorebooks as book (book.id)}
                 <div
-                  class="lorebook-item {book.id === activeLorebookId ? 'active' : ''}"
+                  class="lorebook-item {book.id === activeLorebookId
+                    ? 'active'
+                    : ''}"
                   on:click={() => selectLorebook(book.id)}
-                  on:keydown={(e) => e.key === 'Enter' && selectLorebook(book.id)}
+                  on:keydown={(e) =>
+                    e.key === "Enter" && selectLorebook(book.id)}
                   role="button"
                   tabindex="0"
                 >
@@ -346,11 +371,14 @@
                     <div class="book-title-row">
                       <span class="book-name">{book.name}</span>
                       {#if (settings?.global_lorebook_ids || []).includes(book.id)}
-                        <span class="global-badge" title="Active Globally">Global</span>
+                        <span class="global-badge" title="Active Globally"
+                          >Global</span
+                        >
                       {/if}
                     </div>
                     <span class="book-meta">
-                      {book.entries.length} {book.entries.length === 1 ? 'entry' : 'entries'}
+                      {book.entries.length}
+                      {book.entries.length === 1 ? "entry" : "entries"}
                     </span>
                   </div>
                 </div>
@@ -378,15 +406,27 @@
                     on:click={handleToggleGlobal}
                     title="Toggle active globally for all characters & chats"
                   >
-                    🌐 {isGlobalActive ? 'Global: ON' : 'Global: OFF'}
+                    🌐 {isGlobalActive ? "Global: ON" : "Global: OFF"}
                   </button>
-                  <button class="icon-tool-btn" on:click={handleExportJson} title="Export as JSON">
+                  <button
+                    class="icon-tool-btn"
+                    on:click={handleExportJson}
+                    title="Export as JSON"
+                  >
                     💾
                   </button>
-                  <button class="icon-tool-btn" on:click={handleDuplicateLorebook} title="Duplicate Lorebook">
+                  <button
+                    class="icon-tool-btn"
+                    on:click={handleDuplicateLorebook}
+                    title="Duplicate Lorebook"
+                  >
                     📑
                   </button>
-                  <button class="icon-tool-btn delete-btn" on:click={handleDeleteActiveLorebook} title="Delete Lorebook">
+                  <button
+                    class="icon-tool-btn delete-btn"
+                    on:click={handleDeleteActiveLorebook}
+                    title="Delete Lorebook"
+                  >
                     🗑️
                   </button>
                 </div>
@@ -419,7 +459,10 @@
                   />
                 </div>
                 <div class="meta-field checkbox-field">
-                  <label class="checkbox-label" title="Activated entries can trigger other entries">
+                  <label
+                    class="checkbox-label"
+                    title="Activated entries can trigger other entries"
+                  >
                     <input
                       type="checkbox"
                       bind:checked={activeLorebook.recursive_scanning}
@@ -449,36 +492,56 @@
               {#if filteredEntries.length === 0}
                 <div class="empty-col">
                   <p>No entries found.</p>
-                  <button class="link-btn" on:click={handleCreateEntry}>+ Add first entry</button>
+                  <button class="link-btn" on:click={handleCreateEntry}
+                    >+ Add first entry</button
+                  >
                 </div>
               {:else}
                 {#each filteredEntries as entry (entry.id)}
                   <div
-                    class="entry-card {entry.id === selectedEntryId ? 'active' : ''} {!entry.enabled ? 'disabled' : ''}"
+                    class="entry-card {entry.id === selectedEntryId
+                      ? 'active'
+                      : ''} {!entry.enabled ? 'disabled' : ''}"
                     on:click={() => selectEntry(entry.id)}
-                    on:keydown={(e) => e.key === 'Enter' && selectEntry(entry.id)}
+                    on:keydown={(e) =>
+                      e.key === "Enter" && selectEntry(entry.id)}
                     role="button"
                     tabindex="0"
                   >
                     <div class="entry-card-header">
                       <button
-                        class="status-dot {entry.enabled ? 'enabled' : 'disabled'}"
-                        on:click|stopPropagation={() => handleToggleEntryEnabled(entry)}
-                        title={entry.enabled ? 'Click to disable' : 'Click to enable'}
+                        class="status-dot {entry.enabled
+                          ? 'enabled'
+                          : 'disabled'}"
+                        on:click|stopPropagation={() =>
+                          handleToggleEntryEnabled(entry)}
+                        title={entry.enabled
+                          ? "Click to disable"
+                          : "Click to enable"}
                       ></button>
-                      <span class="entry-title">{entry.comment || 'Untitled Entry'}</span>
-                      <span class="position-badge">{entry.position}{entry.position === 'at_depth' ? ` (D=${entry.depth})` : ''}</span>
+                      <span class="entry-title"
+                        >{entry.comment || "Untitled Entry"}</span
+                      >
+                      <span class="position-badge"
+                        >{entry.position}{entry.position === "at_depth"
+                          ? ` (D=${entry.depth})`
+                          : ""}</span
+                      >
                     </div>
 
                     <div class="entry-keys-row">
                       {#if entry.constant}
-                        <span class="key-pill constant">Constant (Always On)</span>
+                        <span class="key-pill constant"
+                          >Constant (Always On)</span
+                        >
                       {:else if entry.keys.length > 0}
-                        {#each entry.keys.slice(0, 3) as key}
+                        {#each entry.keys.slice(0, 3) as key (key)}
                           <span class="key-pill">{key}</span>
                         {/each}
                         {#if entry.keys.length > 3}
-                          <span class="key-pill more">+{entry.keys.length - 3}</span>
+                          <span class="key-pill more"
+                            >+{entry.keys.length - 3}</span
+                          >
                         {/if}
                       {:else}
                         <span class="key-pill no-keys">No keys</span>
@@ -486,7 +549,10 @@
                     </div>
 
                     <p class="entry-preview">
-                      {entry.content ? entry.content.slice(0, 75) + (entry.content.length > 75 ? '...' : '') : 'No content'}
+                      {entry.content
+                        ? entry.content.slice(0, 75) +
+                          (entry.content.length > 75 ? "..." : "")
+                        : "No content"}
                     </p>
                   </div>
                 {/each}
@@ -508,10 +574,12 @@
                   />
                   <div class="editor-actions">
                     <button
-                      class="entry-toggle-btn {selectedEntry.enabled ? 'active' : ''}"
+                      class="entry-toggle-btn {selectedEntry.enabled
+                        ? 'active'
+                        : ''}"
                       on:click={() => handleToggleEntryEnabled(selectedEntry)}
                     >
-                      {selectedEntry.enabled ? 'Active' : 'Disabled'}
+                      {selectedEntry.enabled ? "Active" : "Disabled"}
                     </button>
                     <button
                       class="icon-tool-btn"
@@ -535,7 +603,9 @@
                 <!-- Primary Trigger Keys -->
                 <div class="form-group">
                   <div class="form-label-row">
-                    <label for="primary-keys-input">Trigger Keywords (Primary)</label>
+                    <label for="primary-keys-input"
+                      >Trigger Keywords (Primary)</label
+                    >
                     <span class="field-hint">Comma separated</span>
                   </div>
                   <input
@@ -550,7 +620,10 @@
 
                 <!-- Activation Mode Flags -->
                 <div class="form-row-flags">
-                  <label class="checkbox-label" title="Always insert this entry regardless of chat keywords">
+                  <label
+                    class="checkbox-label"
+                    title="Always insert this entry regardless of chat keywords"
+                  >
                     <input
                       type="checkbox"
                       bind:checked={selectedEntry.constant}
@@ -559,7 +632,10 @@
                     <span>Constant (Always Active)</span>
                   </label>
 
-                  <label class="checkbox-label" title="Require secondary keys to trigger this entry">
+                  <label
+                    class="checkbox-label"
+                    title="Require secondary keys to trigger this entry"
+                  >
                     <input
                       type="checkbox"
                       bind:checked={selectedEntry.selective}
@@ -588,16 +664,26 @@
                     </div>
 
                     <div class="form-group">
-                      <label for="selective-logic-select">Selective Logic Condition</label>
+                      <label for="selective-logic-select"
+                        >Selective Logic Condition</label
+                      >
                       <select
                         id="selective-logic-select"
                         bind:value={selectedEntry.selective_logic}
                         on:change={persistActiveLorebook}
                       >
-                        <option value={0}>AND ANY — Require at least one secondary key</option>
-                        <option value={1}>NOT ANY — Exclude if any secondary key is present</option>
-                        <option value={2}>AND ALL — Require ALL secondary keys to be present</option>
-                        <option value={3}>NOT ALL — Exclude if all secondary keys are present</option>
+                        <option value={0}
+                          >AND ANY — Require at least one secondary key</option
+                        >
+                        <option value={1}
+                          >NOT ANY — Exclude if any secondary key is present</option
+                        >
+                        <option value={2}
+                          >AND ALL — Require ALL secondary keys to be present</option
+                        >
+                        <option value={3}
+                          >NOT ALL — Exclude if all secondary keys are present</option
+                        >
                       </select>
                     </div>
                   </div>
@@ -606,23 +692,31 @@
                 <!-- Placement & Ordering -->
                 <div class="form-row-dual">
                   <div class="form-group">
-                    <label for="position-select">Insertion Strategy / Position</label>
+                    <label for="position-select"
+                      >Insertion Strategy / Position</label
+                    >
                     <select
                       id="position-select"
                       bind:value={selectedEntry.position}
                       on:change={persistActiveLorebook}
                     >
-                      <option value="before_char">Before Character Definition</option>
-                      <option value="after_char">After Character Definition</option>
+                      <option value="before_char"
+                        >Before Character Definition</option
+                      >
+                      <option value="after_char"
+                        >After Character Definition</option
+                      >
                       <option value="before_scenario">Before Scenario</option>
                       <option value="after_scenario">After Scenario</option>
                       <option value="top_system">Top of System Message</option>
-                      <option value="bottom_system">Bottom of System Message</option>
+                      <option value="bottom_system"
+                        >Bottom of System Message</option
+                      >
                       <option value="at_depth">In Chat History at Depth</option>
                     </select>
                   </div>
 
-                  {#if selectedEntry.position === 'at_depth'}
+                  {#if selectedEntry.position === "at_depth"}
                     <div class="form-group">
                       <label for="depth-input">History Depth</label>
                       <input
@@ -637,7 +731,8 @@
                     </div>
                   {:else}
                     <div class="form-group">
-                      <label for="order-input">Insertion Order / Priority</label>
+                      <label for="order-input">Insertion Order / Priority</label
+                      >
                       <input
                         id="order-input"
                         type="number"
@@ -652,7 +747,10 @@
                 <details class="advanced-details">
                   <summary>Advanced Matching Options</summary>
                   <div class="advanced-grid">
-                    <label class="checkbox-label" title="Distinguish uppercase and lowercase characters">
+                    <label
+                      class="checkbox-label"
+                      title="Distinguish uppercase and lowercase characters"
+                    >
                       <input
                         type="checkbox"
                         bind:checked={selectedEntry.case_sensitive}
@@ -661,7 +759,10 @@
                       <span>Case Sensitive</span>
                     </label>
 
-                    <label class="checkbox-label" title="Treat trigger keywords as Regular Expressions">
+                    <label
+                      class="checkbox-label"
+                      title="Treat trigger keywords as Regular Expressions"
+                    >
                       <input
                         type="checkbox"
                         bind:checked={selectedEntry.use_regex}
@@ -670,7 +771,10 @@
                       <span>Regex Match</span>
                     </label>
 
-                    <label class="checkbox-label" title="Do not scan this entry's content during recursive scanning">
+                    <label
+                      class="checkbox-label"
+                      title="Do not scan this entry's content during recursive scanning"
+                    >
                       <input
                         type="checkbox"
                         bind:checked={selectedEntry.prevent_recursion}
@@ -684,9 +788,12 @@
                 <!-- Entry Content -->
                 <div class="form-group content-group">
                   <div class="form-label-row">
-                    <label for="entry-content-textarea">Entry Content (Injected Text)</label>
+                    <label for="entry-content-textarea"
+                      >Entry Content (Injected Text)</label
+                    >
                     <span class="token-count">
-                      ~{estimateTokens(selectedEntry.content)} tokens ({selectedEntry.content.length} chars)
+                      ~{estimateTokens(selectedEntry.content)} tokens ({selectedEntry
+                        .content.length} chars)
                     </span>
                   </div>
                   <textarea
@@ -697,9 +804,36 @@
                     placeholder="Enter lore context to be injected when triggered. Supports macros like &#123;&#123;char&#125;&#125;, &#123;&#123;user&#125;&#125;, &#123;&#123;scenario&#125;&#125;..."
                   ></textarea>
                   <div class="macro-chips">
-                    <button type="button" class="chip" on:click={() => { if (selectedEntry) { selectedEntry.content += ' {{char}}'; persistActiveLorebook(); } }}>+ &#123;&#123;char&#125;&#125;</button>
-                    <button type="button" class="chip" on:click={() => { if (selectedEntry) { selectedEntry.content += ' {{user}}'; persistActiveLorebook(); } }}>+ &#123;&#123;user&#125;&#125;</button>
-                    <button type="button" class="chip" on:click={() => { if (selectedEntry) { selectedEntry.content += ' {{scenario}}'; persistActiveLorebook(); } }}>+ &#123;&#123;scenario&#125;&#125;</button>
+                    <button
+                      type="button"
+                      class="chip"
+                      on:click={() => {
+                        if (selectedEntry) {
+                          selectedEntry.content += " {{char}}";
+                          persistActiveLorebook();
+                        }
+                      }}>+ &#123;&#123;char&#125;&#125;</button
+                    >
+                    <button
+                      type="button"
+                      class="chip"
+                      on:click={() => {
+                        if (selectedEntry) {
+                          selectedEntry.content += " {{user}}";
+                          persistActiveLorebook();
+                        }
+                      }}>+ &#123;&#123;user&#125;&#125;</button
+                    >
+                    <button
+                      type="button"
+                      class="chip"
+                      on:click={() => {
+                        if (selectedEntry) {
+                          selectedEntry.content += " {{scenario}}";
+                          persistActiveLorebook();
+                        }
+                      }}>+ &#123;&#123;scenario&#125;&#125;</button
+                    >
                   </div>
                 </div>
               </div>
@@ -708,16 +842,26 @@
             <div class="col-editor empty-state-box">
               <div class="empty-icon">📝</div>
               <h3>No Entry Selected</h3>
-              <p>Select an entry from the list or create a new one to edit its details.</p>
-              <button class="add-entry-btn" on:click={handleCreateEntry}>+ Create Entry</button>
+              <p>
+                Select an entry from the list or create a new one to edit its
+                details.
+              </p>
+              <button class="add-entry-btn" on:click={handleCreateEntry}
+                >+ Create Entry</button
+              >
             </div>
           {/if}
         {:else}
           <div class="empty-state-full">
             <div class="empty-icon">📚</div>
             <h3>No Lorebook Selected</h3>
-            <p>Select or create a lorebook to view and edit its world info entries.</p>
-            <button class="action-btn new-btn" on:click={handleCreateLorebook}>+ Create Lorebook</button>
+            <p>
+              Select or create a lorebook to view and edit its world info
+              entries.
+            </p>
+            <button class="action-btn new-btn" on:click={handleCreateLorebook}
+              >+ Create Lorebook</button
+            >
           </div>
         {/if}
       </div>
@@ -1002,7 +1146,7 @@
     text-transform: uppercase;
     font-weight: 600;
   }
-  .meta-field input[type='number'] {
+  .meta-field input[type="number"] {
     background: #11111b;
     border: 1px solid #313244;
     border-radius: 4px;
@@ -1288,7 +1432,7 @@
     color: #cdd6f4;
     cursor: pointer;
   }
-  .checkbox-label input[type='checkbox'] {
+  .checkbox-label input[type="checkbox"] {
     accent-color: #cba6f7;
     width: 15px;
     height: 15px;

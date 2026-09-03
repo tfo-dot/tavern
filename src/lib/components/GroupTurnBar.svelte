@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { Character, Group, TurnMode } from '../types';
+  import type { Character, Group, TurnMode } from "../types";
 
   export let group: Group;
   export let characters: Character[] = [];
@@ -20,12 +20,12 @@
 
   function getTurnModeLabel(mode: TurnMode): string {
     switch (mode) {
-      case 'Natural':
-        return '🔄 Sequential';
-      case 'Manual':
-        return '🎯 Manual';
-      case 'Random':
-        return '🎲 Random';
+      case "Natural":
+        return "🔄 Sequential";
+      case "Manual":
+        return "🎯 Manual";
+      case "Random":
+        return "🎲 Random";
       default:
         return mode;
     }
@@ -62,7 +62,7 @@
           on:click={onToggleAutoMode}
           title="Auto-trigger response after sending message"
         >
-          {group.auto_mode ? '⚡ Auto' : '⏸ Manual'}
+          {group.auto_mode ? "⚡ Auto" : "⏸ Manual"}
         </button>
       </div>
       {#if group.description}
@@ -77,25 +77,34 @@
   <div class="turn-queue-container">
     <span class="queue-label">Speakers:</span>
     <div class="turn-queue">
-      {#each group.members as member, idx}
+      {#each group.members as member, idx (member.character_id)}
         {@const char = getCharacter(member.character_id)}
         {@const isNext = member.character_id === nextSpeakerId}
-        {@const isStreaming = isGenerating && member.character_id === currentStreamingCharacterId}
+        {@const isStreaming =
+          isGenerating && member.character_id === currentStreamingCharacterId}
         <div
-          class="character-turn-pill {!member.enabled ? 'disabled' : ''} {member.mute ? 'muted' : ''} {isNext ? 'next-speaker' : ''} {isStreaming ? 'streaming' : ''}"
+          class="character-turn-pill {!member.enabled
+            ? 'disabled'
+            : ''} {member.mute ? 'muted' : ''} {isNext
+            ? 'next-speaker'
+            : ''} {isStreaming ? 'streaming' : ''}"
         >
           <button
             type="button"
             class="pill-main-btn"
             disabled={isGenerating || !member.enabled}
             on:click={() => onTriggerSpeaker(member.character_id)}
-            title={`Trigger ${char?.card.data.name || 'Character'} to speak`}
+            title={`Trigger ${char?.card.data.name || "Character"} to speak`}
           >
             <div class="pill-avatar">
               {#if char?.avatar_data_url}
                 <img src={char.avatar_data_url} alt={char.card.data.name} />
               {:else}
-                <span>{(char?.card.data.name || '?').slice(0, 2).toUpperCase()}</span>
+                <span
+                  >{(char?.card.data.name || "?")
+                    .slice(0, 2)
+                    .toUpperCase()}</span
+                >
               {/if}
               {#if isStreaming}
                 <span class="pulsing-dot"></span>
@@ -103,7 +112,7 @@
             </div>
 
             <div class="pill-info">
-              <span class="pill-name">{char?.card.data.name || 'Unknown'}</span>
+              <span class="pill-name">{char?.card.data.name || "Unknown"}</span>
               {#if isStreaming}
                 <span class="pill-status typing">Speaking...</span>
               {:else if isNext}
@@ -116,9 +125,9 @@
             type="button"
             class="pill-mute-btn"
             on:click|stopPropagation={() => onToggleMute(member.character_id)}
-            title={member.mute ? 'Unmute character' : 'Mute character'}
+            title={member.mute ? "Unmute character" : "Mute character"}
           >
-            {member.mute ? '🔇' : '🔊'}
+            {member.mute ? "🔇" : "🔊"}
           </button>
         </div>
       {/each}
@@ -132,7 +141,9 @@
       class="next-turn-btn"
       disabled={isGenerating}
       on:click={onNextTurn}
-      title={nextSpeakerChar ? `Trigger next turn (${nextSpeakerChar.card.data.name})` : 'Trigger next character turn'}
+      title={nextSpeakerChar
+        ? `Trigger next turn (${nextSpeakerChar.card.data.name})`
+        : "Trigger next character turn"}
     >
       <span class="play-icon">▶</span>
       <span class="btn-text">
@@ -319,7 +330,8 @@
   }
 
   @keyframes pulseBorder {
-    0%, 100% {
+    0%,
+    100% {
       box-shadow: 0 0 4px rgba(166, 227, 161, 0.3);
     }
     50% {
@@ -383,8 +395,15 @@
   }
 
   @keyframes pulse {
-    0%, 100% { transform: scale(1); opacity: 1; }
-    50% { transform: scale(1.4); opacity: 0.7; }
+    0%,
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+    50% {
+      transform: scale(1.4);
+      opacity: 0.7;
+    }
   }
 
   .pill-info {

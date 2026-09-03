@@ -1,6 +1,6 @@
 <script lang="ts">
-  import type { AppSettings } from '../types';
-  import { fetchEndpointModels } from '../api';
+  import type { AppSettings } from "../types";
+  import { fetchEndpointModels } from "../api";
 
   export let settings: AppSettings;
   export let isOpen = false;
@@ -11,54 +11,61 @@
   let showApiKey = false;
   let isFetchingModels = false;
   let fetchedModels: string[] = [];
-  let fetchStatus = '';
-  let stopSequenceStr = '';
+  let fetchStatus = "";
+  let stopSequenceStr = "";
 
   const PRESETS = [
-    { name: 'Ollama', endpoint: 'http://localhost:11434/v1', key: 'none' },
-    { name: 'KoboldCpp', endpoint: 'http://localhost:5001/v1', key: 'none' },
-    { name: 'LM Studio', endpoint: 'http://localhost:1234/v1', key: 'none' },
-    { name: 'OpenRouter', endpoint: 'https://openrouter.ai/api/v1', key: '' },
-    { name: 'OpenAI', endpoint: 'https://api.openai.com/v1', key: '' },
+    { name: "Ollama", endpoint: "http://localhost:11434/v1", key: "none" },
+    { name: "KoboldCpp", endpoint: "http://localhost:5001/v1", key: "none" },
+    { name: "LM Studio", endpoint: "http://localhost:1234/v1", key: "none" },
+    { name: "OpenRouter", endpoint: "https://openrouter.ai/api/v1", key: "" },
+    { name: "OpenAI", endpoint: "https://api.openai.com/v1", key: "" },
   ];
 
-  let wasOpen = false;
-  $: if (isOpen && !wasOpen && settings) {
-    wasOpen = true;
+  $: if (isOpen && settings) {
     draft = JSON.parse(JSON.stringify(settings));
-    stopSequenceStr = (draft.stop_sequences || []).join(', ');
-    fetchStatus = '';
-  } else if (!isOpen) {
-    wasOpen = false;
+    stopSequenceStr = (draft.stop_sequences || []).join(", ");
+    fetchStatus = "";
   }
 
-  function applyPreset(preset: { name: string; endpoint: string; key: string }) {
+  function applyPreset(preset: {
+    name: string;
+    endpoint: string;
+    key: string;
+  }) {
     draft = {
       ...draft,
       endpoint: preset.endpoint,
       api_key: preset.key !== undefined ? preset.key : draft.api_key,
-      active_model: '',
+      active_model: "",
     };
     fetchedModels = [];
-    fetchStatus = '';
+    fetchStatus = "";
   }
 
   async function handleFetchModels() {
     if (!draft.endpoint) return;
     isFetchingModels = true;
-    fetchStatus = 'Connecting...';
+    fetchStatus = "Connecting...";
     try {
       fetchedModels = await fetchEndpointModels(draft.endpoint, draft.api_key);
       if (fetchedModels.length > 0) {
         fetchStatus = `Found ${fetchedModels.length} models!`;
-        if (!draft.active_model || !fetchedModels.includes(draft.active_model)) {
+        if (
+          !draft.active_model ||
+          !fetchedModels.includes(draft.active_model)
+        ) {
           draft.active_model = fetchedModels[0];
         }
       } else {
-        fetchStatus = 'Connected, but no models found.';
+        fetchStatus = "Connected, but no models found.";
       }
-    } catch (e: any) {
-      fetchStatus = `Error: ${e?.message || e}`;
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        fetchStatus = `Error: ${e.message}`;
+      } else {
+        fetchStatus = `Error: ${e}`;
+      }
     } finally {
       isFetchingModels = false;
     }
@@ -67,7 +74,7 @@
   function save() {
     // Parse stop sequences
     draft.stop_sequences = stopSequenceStr
-      .split(',')
+      .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
 
@@ -77,8 +84,20 @@
 </script>
 
 {#if isOpen}
-  <div class="modal-backdrop" on:click={onClose} on:keydown={(e) => e.key === 'Escape' && onClose()} role="presentation">
-    <div class="modal-card" on:click|stopPropagation on:keydown|stopPropagation role="dialog" aria-modal="true" tabindex="-1">
+  <div
+    class="modal-backdrop"
+    on:click={onClose}
+    on:keydown={(e) => e.key === "Escape" && onClose()}
+    role="presentation"
+  >
+    <div
+      class="modal-card"
+      on:click|stopPropagation
+      on:keydown|stopPropagation
+      role="dialog"
+      aria-modal="true"
+      tabindex="-1"
+    >
       <div class="modal-header">
         <h2>⚙️ API & Generation Settings</h2>
         <button class="close-btn" on:click={onClose}>✕</button>
@@ -89,9 +108,11 @@
         <div class="form-group">
           <span class="label-heading">Quick Presets</span>
           <div class="presets-row">
-            {#each PRESETS as p}
+            {#each PRESETS as p (p.name)}
               <button
-                class="preset-btn {draft.endpoint === p.endpoint ? 'active' : ''}"
+                class="preset-btn {draft.endpoint === p.endpoint
+                  ? 'active'
+                  : ''}"
                 on:click={() => applyPreset(p)}
               >
                 {p.name}
@@ -113,11 +134,13 @@
 
         <!-- API Key -->
         <div class="form-group">
-          <label for="apikey">API Key (use "none" for local Ollama/Kobold)</label>
+          <label for="apikey"
+            >API Key (use "none" for local Ollama/Kobold)</label
+          >
           <div class="input-with-action">
             <input
               id="apikey"
-              type={showApiKey ? 'text' : 'password'}
+              type={showApiKey ? "text" : "password"}
               bind:value={draft.api_key}
               placeholder="sk-..."
             />
@@ -126,7 +149,7 @@
               on:click={() => (showApiKey = !showApiKey)}
               type="button"
             >
-              {showApiKey ? 'Hide' : 'Show'}
+              {showApiKey ? "Hide" : "Show"}
             </button>
           </div>
         </div>
@@ -141,13 +164,13 @@
               disabled={isFetchingModels || !draft.endpoint}
               type="button"
             >
-              {isFetchingModels ? 'Fetching...' : '⚡ Fetch Models'}
+              {isFetchingModels ? "Fetching..." : "⚡ Fetch Models"}
             </button>
           </div>
 
           {#if fetchedModels.length > 0}
             <select id="model" bind:value={draft.active_model}>
-              {#each fetchedModels as m}
+              {#each fetchedModels as m (m)}
                 <option value={m}>{m}</option>
               {/each}
             </select>
@@ -232,7 +255,8 @@
           <div class="param-card">
             <div class="param-header">
               <label for="freq">Frequency Penalty</label>
-              <span class="param-val">{draft.frequency_penalty.toFixed(2)}</span>
+              <span class="param-val">{draft.frequency_penalty.toFixed(2)}</span
+              >
             </div>
             <input
               id="freq"
@@ -274,12 +298,12 @@
         <!-- Global System Template -->
         <div class="form-group">
           <label for="systmpl">
-            Global System Prompt Template (Supports <code>&#123;&#123;char&#125;&#125;</code>, <code>&#123;&#123;user&#125;&#125;</code>, <code>&#123;&#123;scenario&#125;&#125;</code>)
+            Global System Prompt Template (Supports <code
+              >&#123;&#123;char&#125;&#125;</code
+            >, <code>&#123;&#123;user&#125;&#125;</code>,
+            <code>&#123;&#123;scenario&#125;&#125;</code>)
           </label>
-          <textarea
-            id="systmpl"
-            rows="3"
-            bind:value={draft.system_template}
+          <textarea id="systmpl" rows="3" bind:value={draft.system_template}
           ></textarea>
         </div>
       </div>
@@ -360,8 +384,8 @@
     color: #a6adc8;
   }
 
-  input[type='text'],
-  input[type='password'],
+  input[type="text"],
+  input[type="password"],
   select,
   textarea {
     background: #181825;
@@ -483,7 +507,7 @@
     font-size: 0.88rem;
   }
 
-  input[type='range'] {
+  input[type="range"] {
     accent-color: #cba6f7;
     cursor: pointer;
   }

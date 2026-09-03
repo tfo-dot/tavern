@@ -16,6 +16,7 @@
 
   let deviceInfo: SyncDeviceInfo | null = null;
   let discoveredPeers: DiscoveredPeer[] = [];
+
   let peerPins: Record<string, string> = {};
 
   let isScanning = false;
@@ -318,7 +319,7 @@
             <div class="ip-list-group">
               <label for="ip-list-label">Your Local IP Addresses (for other devices to connect):</label>
               <div id="ip-list-label" class="ip-chips">
-                {#each deviceInfo.local_ips as ip}
+                {#each deviceInfo.local_ips as ip (ip)}
                   {@const fullAddr = `${ip}:${deviceInfo.port}`}
                   <button
                     class="ip-chip"
