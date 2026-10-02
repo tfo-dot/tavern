@@ -1,4 +1,4 @@
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::{AppHandle, Emitter};
@@ -79,19 +79,17 @@ pub async fn sync_with_peer(
     let local_sv_b64 = BASE64.encode(local_sv_encoded);
 
     let mut outgoing_updates_b64 = String::new();
-    if let Some(target_sv_str) = &handshake_data.state_vector_base64 {
-        if let Ok(target_sv_bytes) = BASE64.decode(target_sv_str.trim()) {
-            if let Ok(target_vv) = loro::VersionVector::decode(&target_sv_bytes) {
-                if let Ok(updates) = doc.export_updates_from(&target_vv) {
-                    outgoing_updates_b64 = BASE64.encode(updates);
-                }
-            }
-        }
+    if let Some(target_sv_str) = &handshake_data.state_vector_base64
+        && let Ok(target_sv_bytes) = BASE64.decode(target_sv_str.trim())
+        && let Ok(target_vv) = loro::VersionVector::decode(&target_sv_bytes)
+        && let Ok(updates) = doc.export_updates_from(&target_vv)
+    {
+        outgoing_updates_b64 = BASE64.encode(updates);
     }
-    if outgoing_updates_b64.is_empty() {
-        if let Ok(snapshot) = doc.export_snapshot() {
-            outgoing_updates_b64 = BASE64.encode(snapshot);
-        }
+    if outgoing_updates_b64.is_empty()
+        && let Ok(snapshot) = doc.export_snapshot()
+    {
+        outgoing_updates_b64 = BASE64.encode(snapshot);
     }
 
     // Step 3: Send exchange request
@@ -129,10 +127,10 @@ pub async fn sync_with_peer(
     }
 
     // Step 4: Import remote updates into local CRDT doc
-    if !exchange_data.updates_base64.trim().is_empty() {
-        if let Ok(remote_updates_bytes) = BASE64.decode(exchange_data.updates_base64.trim()) {
-            doc.import_updates(&remote_updates_bytes)?;
-        }
+    if !exchange_data.updates_base64.trim().is_empty()
+        && let Ok(remote_updates_bytes) = BASE64.decode(exchange_data.updates_base64.trim())
+    {
+        doc.import_updates(&remote_updates_bytes)?;
     }
 
     // Step 5: Sync to local disk and persist

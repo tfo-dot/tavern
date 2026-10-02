@@ -12,6 +12,7 @@ import type {
   SyncDeviceInfo,
   DiscoveredPeer,
   SyncStats,
+  ContextBreakdown,
 } from './types';
 // Character APIs
 export async function getAllCharacters(): Promise<Character[]> {
@@ -79,17 +80,6 @@ export async function listGroupChats(groupId: string): Promise<ChatSummary[]> {
   return await invoke<ChatSummary[]>('list_group_chats', { groupId });
 }
 
-export async function setMessageAuthor(
-  id: string,
-  characterId: string | null,
-  name: string | null
-): Promise<MessageViewNode[]> {
-  return await invoke<MessageViewNode[]>('set_message_author', {
-    id,
-    characterId,
-    name,
-  });
-}
 // Chat APIs
 export async function createChat(
   characterId: string,
@@ -178,6 +168,16 @@ export async function getSettings(): Promise<AppSettings> {
   return await invoke<AppSettings>('get_settings');
 }
 
+export async function forkChatAtMessage(
+  messageId: string,
+  newTitle?: string
+): Promise<ChatTree> {
+  return await invoke<ChatTree>('fork_chat_at_message', {
+    messageId,
+    newTitle: newTitle || null,
+  });
+}
+
 export async function saveSettings(newSettings: AppSettings): Promise<void> {
   await invoke('save_settings', { newSettings });
 }
@@ -204,9 +204,14 @@ export async function setActiveUserPersona(id: string): Promise<UserPersona> {
 
 export async function fetchEndpointModels(
   endpoint: string,
-  apiKey: string
+  apiKey: string,
+  apiType?: string
 ): Promise<string[]> {
-  return await invoke<string[]>('fetch_endpoint_models', { endpoint, apiKey });
+  return await invoke<string[]>('fetch_endpoint_models', {
+    endpoint,
+    apiKey,
+    apiType: apiType || null,
+  });
 }
 
 // Generation APIs
@@ -229,6 +234,30 @@ export async function continueReply(): Promise<void> {
 export async function abortGeneration(): Promise<void> {
   await invoke('abort_generation');
 }
+export async function calculateContextBreakdown(
+  draftInput?: string
+): Promise<ContextBreakdown> {
+  return await invoke<ContextBreakdown>('calculate_context_breakdown', {
+    draftInput: draftInput || null,
+  });
+}
+export async function impersonateReply(): Promise<void> {
+  await invoke('impersonate_reply');
+}
+
+
+export async function updateChatAuthorsNote(
+  authorsNote: string,
+  depth?: number,
+  interval?: number
+): Promise<void> {
+  await invoke('update_chat_authors_note', {
+    authorsNote,
+    depth: depth !== undefined ? depth : null,
+    interval: interval !== undefined ? interval : null,
+  });
+}
+
 
 // Lorebook APIs
 export async function getAllLorebooks(): Promise<Lorebook[]> {

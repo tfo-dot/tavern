@@ -3,15 +3,15 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tauri::AppHandle;
-use tokio::sync::{watch, RwLock};
+use tokio::sync::{RwLock, watch};
 use uuid::Uuid;
 
 use super::client::sync_with_peer;
 use super::discovery::{get_local_ip_addresses, run_discovery_responder, scan_lan_peers};
 use super::protocol::{DiscoveredPeer, SyncDeviceInfo, SyncStats};
-use super::server::{get_default_device_name, run_sync_server, ServerContext};
-use crate::storage::AppSettings;
+use super::server::{ServerContext, get_default_device_name, run_sync_server};
 use crate::AppState;
+use crate::storage::AppSettings;
 pub const DEFAULT_SYNC_PORT: u16 = 24567;
 
 pub struct SyncManager {

@@ -60,8 +60,7 @@ pub async fn run_discovery_responder(
             res = socket.recv_from(&mut buf) => {
                 match res {
                     Ok((len, peer_addr)) => {
-                        if let Ok(msg) = serde_json::from_slice::<BeaconMessage>(&buf[..len]) {
-                            if msg.kind == "probe" && msg.device_id != device_id {
+                        if let Ok(msg) = serde_json::from_slice::<BeaconMessage>(&buf[..len]) && msg.kind == "probe" && msg.device_id != device_id {
                                 let cur_name = device_name.read().await.clone();
                                 let announce = BeaconMessage {
                                     kind: "announce".to_string(),
@@ -72,7 +71,6 @@ pub async fn run_discovery_responder(
                                 if let Ok(reply_bytes) = serde_json::to_vec(&announce) {
                                     let _ = socket.send_to(&reply_bytes, peer_addr).await;
                                 }
-                            }
                         }
                     }
                     Err(e) => {
@@ -129,28 +127,27 @@ pub async fn scan_lan_peers(
 
         match tokio::time::timeout(remaining, socket.recv_from(&mut buf)).await {
             Ok(Ok((len, peer_addr))) => {
-                if let Ok(msg) = serde_json::from_slice::<BeaconMessage>(&buf[..len]) {
-                    if (msg.kind == "announce" || msg.kind == "probe")
-                        && msg.device_id != local_device_id
-                    {
-                        let ip_str = peer_addr.ip().to_string();
-                        let target_addr = format!("{}:{}", ip_str, msg.port);
-                        let epoch_now = SystemTime::now()
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_millis() as u64;
+                if let Ok(msg) = serde_json::from_slice::<BeaconMessage>(&buf[..len])
+                    && (msg.kind == "announce" || msg.kind == "probe")
+                    && msg.device_id != local_device_id
+                {
+                    let ip_str = peer_addr.ip().to_string();
+                    let target_addr = format!("{}:{}", ip_str, msg.port);
+                    let epoch_now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_millis() as u64;
 
-                        peers_map.insert(
-                            msg.device_id.clone(),
-                            DiscoveredPeer {
-                                device_id: msg.device_id,
-                                device_name: msg.device_name,
-                                address: target_addr,
-                                port: msg.port,
-                                last_seen_epoch_ms: epoch_now,
-                            },
-                        );
-                    }
+                    peers_map.insert(
+                        msg.device_id.clone(),
+                        DiscoveredPeer {
+                            device_id: msg.device_id,
+                            device_name: msg.device_name,
+                            address: target_addr,
+                            port: msg.port,
+                            last_seen_epoch_ms: epoch_now,
+                        },
+                    );
                 }
             }
             _ => break, // Timeout elapsed

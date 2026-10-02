@@ -1,9 +1,9 @@
 [package]
 name = "tavern"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Tauri App"
-authors = ["you"]
-edition = "2021"
+authors = ["tfo"]
+edition = "2024"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -15,12 +15,12 @@ name = "tavern_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = { version = "2", features = [] }
+tauri-build = { version = "2.7.1", features = [] }
 
 [dependencies]
 engine = { path = "../engine" }
-tauri = { version = "2", features = [] }
-tauri-plugin-opener = "2"
+tauri = { version = "2.12.1", features = [] }
+tauri-plugin-opener = "2.7.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.38", features = ["full"] }
@@ -33,3 +33,4 @@ local-ip-address = "0.6"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 loro = "1.13.9"
 parking_lot = "0.12"
+tauri-plugin-fs = "2"

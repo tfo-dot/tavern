@@ -1,13 +1,10 @@
-use engine::character::{Character, CharacterCardV1, CharacterCardV2, CharacterData, UserPersona};
+use engine::character::{CharacterCardV2, CharacterData, UserPersona};
 use engine::chat::{
-    AuthorRole, ChatTree, Group, GroupMember, TurnMode, export_sillytavern_chat_jsonl,
+    AuthorRole, ChatTree, Group, TurnMode, export_sillytavern_chat_jsonl,
     import_sillytavern_chat_jsonl, resolve_next_speaker,
 };
 use engine::crdt::TavernCrdtDoc;
-use engine::lorebook::{
-    Lorebook, LorebookEntry, LorebookPosition, SelectiveLogic, parse_lorebook,
-    scan_lorebooks_for_activation,
-};
+use engine::lorebook::{Lorebook, LorebookEntry, LorebookPosition, SelectiveLogic};
 use engine::parser::{export_character_json, export_character_png, parse_character_card};
 use engine::prompt::{
     PromptConfig, build_chat_prompt, build_chat_prompt_with_lorebooks,
@@ -198,6 +195,12 @@ fn test_context_token_budgeting() {
         max_context_tokens: 300,
         max_response_tokens: 100,
         include_examples: false,
+        authors_note: None,
+        authors_note_depth: None,
+        authors_note_interval: None,
+        vector_memory_enabled: true,
+        vector_memory_top_k: 3,
+        vector_memory_threshold: 0.25,
     };
 
     let prompt_messages = build_chat_prompt(&char_data, &user, &tree, &config);
@@ -376,7 +379,7 @@ fn test_crdt_concurrent_edits_and_swipes_sync() {
 
     let mut chat1 = ChatTree::new(char1.id.clone(), "Story Chapter 1".to_string());
     let m1 = chat1.append_message(AuthorRole::User, "Where are we?".to_string(), None);
-    let m2_a = chat1.append_message(
+    let _m2_a = chat1.append_message(
         AuthorRole::Assistant,
         "In the enchanted forest.".to_string(),
         Some(m1),
@@ -492,7 +495,7 @@ fn test_prompt_assembly_continuation_and_consecutive_assistant_turns() {
     let mut tree = ChatTree::new("brynhildr".to_string(), "Chat".to_string());
     let m1 = tree.append_message(AuthorRole::Assistant, "Hail, {{user}}.".to_string(), None);
     // Consecutive assistant message (generated without user text)
-    let m2 = tree.append_message(
+    let _m2 = tree.append_message(
         AuthorRole::Assistant,
         "Why do you wander these frozen peaks?".to_string(),
         Some(m1),
@@ -686,7 +689,7 @@ fn test_group_chat_tree_and_speaker_attribution() {
     );
 
     // Turn 3: Char B speaks
-    let turn3 = chat.append_message_with_author(
+    let _turn3 = chat.append_message_with_author(
         AuthorRole::Assistant,
         "There's room by the fireplace.".to_string(),
         Some(turn2),
@@ -711,13 +714,6 @@ fn test_group_chat_tree_and_speaker_attribution() {
     assert_eq!(active_nodes[2].character_id, Some("char_b".to_string()));
     assert_eq!(active_nodes[2].name, Some("Garrick".to_string()));
     assert_eq!(active_nodes[2].sibling_total, 2);
-
-    // Modify author of message
-    chat.set_message_author(turn1, Some("char_c".to_string()), Some("Lyra".to_string()))
-        .unwrap();
-    let updated_nodes = chat.get_active_view_nodes();
-    assert_eq!(updated_nodes[0].character_id, Some("char_c".to_string()));
-    assert_eq!(updated_nodes[0].name, Some("Lyra".to_string()));
 }
 
 #[test]
@@ -928,4 +924,454 @@ fn test_group_chat_lorebook_activation_across_members() {
     let sys_content = &prompt[0].content;
     // entry 2 matched "torch" and "dungeon"
     assert!(sys_content.contains("Dungeon shadows conceal ancient stone traps."));
+}
+
+#[test]
+fn test_authors_note_injection_at_depth() {
+    let mut char_data = CharacterData::default();
+    char_data.name = "Aria".to_string();
+    char_data.description = "A gentle companion.".to_string();
+    let user = UserPersona::default();
+
+    let mut tree = ChatTree::new("aria".to_string(), "Test A/N Depth".to_string());
+    let m1 = tree.append_message(AuthorRole::Assistant, "Hello there!".to_string(), None);
+    let m2 = tree.append_message(AuthorRole::User, "Good day Aria.".to_string(), Some(m1));
+    let _m3 = tree.append_message(
+        AuthorRole::Assistant,
+        "The sky is blue today.".to_string(),
+        Some(m2),
+    );
+
+    // Test Depth 0: Inserted at the end of history
+    tree.authors_note = "Stay cheerful and friendly.".to_string();
+    tree.authors_note_depth = 0;
+    tree.authors_note_interval = 1;
+
+    let config = PromptConfig::default();
+    let prompt_d0 = build_chat_prompt_with_lorebooks(&char_data, &user, &tree, &config, &[]);
+    // Last message should be the Author's Note
+    assert!(
+        prompt_d0
+            .last()
+            .unwrap()
+            .content
+            .contains("Stay cheerful and friendly.")
+    );
+    assert_eq!(prompt_d0.last().unwrap().role, "system");
+
+    // Test Depth 1: Inserted 1 message from the bottom
+    tree.authors_note_depth = 1;
+    let prompt_d1 = build_chat_prompt_with_lorebooks(&char_data, &user, &tree, &config, &[]);
+    let len = prompt_d1.len();
+    assert!(
+        prompt_d1[len - 2]
+            .content
+            .contains("Stay cheerful and friendly.")
+    );
+    assert_eq!(prompt_d1[len - 2].role, "system");
+    assert!(
+        prompt_d1[len - 1]
+            .content
+            .contains("The sky is blue today.")
+    );
+
+    // Test Depth 2: Inserted 2 messages from the bottom
+    tree.authors_note_depth = 2;
+    let prompt_d2 = build_chat_prompt_with_lorebooks(&char_data, &user, &tree, &config, &[]);
+    let len2 = prompt_d2.len();
+    assert!(
+        prompt_d2[len2 - 3]
+            .content
+            .contains("Stay cheerful and friendly.")
+    );
+    assert_eq!(prompt_d2[len2 - 3].role, "system");
+}
+
+#[test]
+fn test_authors_note_update_interval() {
+    let char_data = CharacterData::default();
+    let user = UserPersona::default();
+
+    let mut tree = ChatTree::new("c1".to_string(), "Interval Test".to_string());
+    let m1 = tree.append_message(AuthorRole::Assistant, "Turn 1".to_string(), None);
+    let m2 = tree.append_message(AuthorRole::User, "Turn 2".to_string(), Some(m1));
+    let _m3 = tree.append_message(AuthorRole::Assistant, "Turn 3".to_string(), Some(m2));
+
+    tree.authors_note = "Inject on even turns only.".to_string();
+    tree.authors_note_depth = 1;
+    tree.authors_note_interval = 2;
+
+    let config = PromptConfig::default();
+    // Path length is 3 (odd). With interval 2, it should NOT be injected.
+    let prompt_odd = build_chat_prompt_with_lorebooks(&char_data, &user, &tree, &config, &[]);
+    assert!(
+        !prompt_odd
+            .iter()
+            .any(|m| m.content.contains("Inject on even turns only."))
+    );
+
+    // Add another message to make path length 4 (even).
+    tree.append_message(AuthorRole::User, "Turn 4".to_string(), Some(_m3));
+    let prompt_even = build_chat_prompt_with_lorebooks(&char_data, &user, &tree, &config, &[]);
+    assert!(
+        prompt_even
+            .iter()
+            .any(|m| m.content.contains("Inject on even turns only."))
+    );
+}
+
+#[test]
+fn test_exact_token_counting_and_context_breakdown() {
+    use engine::prompt::{calculate_context_breakdown, count_tokens};
+
+    let sample_text = "The quick brown fox jumps over the lazy dog.";
+    let tokens = count_tokens(sample_text);
+    assert_eq!(tokens, 10);
+
+    let mut char_data = CharacterData::default();
+    char_data.name = "Luna".to_string();
+    char_data.description = "A nocturnal spirit guardian of the midnight grove.".to_string();
+    char_data.personality = "Calm, watchful, mysterious.".to_string();
+    char_data.scenario = "The grove is bathed in silver moonlight.".to_string();
+    char_data.mes_example =
+        "<START>\n{{user}}: Who are you?\n{{char}}: I am the guardian of this sacred grove."
+            .to_string();
+
+    let mut user = UserPersona::default();
+    user.name = "Traveler".to_string();
+    user.description = "A lost wanderer carrying an antique brass lantern.".to_string();
+
+    let mut tree = ChatTree::new("luna".to_string(), "Midnight Grove".to_string());
+    let m1 = tree.append_message(
+        AuthorRole::Assistant,
+        "Welcome to the grove, Traveler.".to_string(),
+        None,
+    );
+    tree.append_message(
+        AuthorRole::User,
+        "The shadows feel alive here.".to_string(),
+        Some(m1),
+    );
+
+    tree.authors_note = "Describe ambient forest sounds and rustling leaves.".to_string();
+    tree.authors_note_depth = 1;
+    tree.authors_note_interval = 1;
+
+    let config = PromptConfig {
+        system_template: "You are {{char}} in a dialogue with {{user}}.".to_string(),
+        max_context_tokens: 2048,
+        max_response_tokens: 500,
+        include_examples: true,
+        authors_note: None,
+        authors_note_depth: None,
+        authors_note_interval: None,
+        vector_memory_enabled: true,
+        vector_memory_top_k: 3,
+        vector_memory_threshold: 0.25,
+    };
+
+    let breakdown = calculate_context_breakdown(
+        &char_data,
+        &user,
+        &tree,
+        &config,
+        &[],
+        Some("Is there a safe path forward?"),
+    );
+
+    assert!(breakdown.system_tokens > 0);
+    assert!(breakdown.character_tokens > 0);
+    assert!(breakdown.user_persona_tokens > 0);
+    assert!(breakdown.authors_note_tokens > 0);
+    assert!(breakdown.examples_tokens > 0);
+    assert!(breakdown.history_tokens > 0);
+    assert!(breakdown.draft_tokens > 0);
+    assert_eq!(breakdown.response_tokens, 500);
+    assert_eq!(breakdown.max_context_tokens, 2048);
+    assert!(breakdown.total_tokens > 0);
+    assert!(breakdown.free_tokens > 0);
+    assert!(breakdown.percentage > 0.0 && breakdown.percentage < 100.0);
+}
+
+#[test]
+fn test_generation_params_and_api_type_detection() {
+    use engine::llm::{
+        ApiType, GenerationParams, normalize_endpoint_for_type, normalize_models_endpoint_for_type,
+    };
+
+    let default_params = GenerationParams::default();
+    assert_eq!(default_params.min_p, 0.0);
+    assert_eq!(default_params.top_k, 40);
+    assert_eq!(default_params.repetition_penalty, 1.05);
+
+    // ApiType Detection
+    assert_eq!(
+        ApiType::detect("https://api.anthropic.com"),
+        ApiType::Anthropic
+    );
+    assert_eq!(
+        ApiType::detect("https://api.anthropic.com/v1/messages"),
+        ApiType::Anthropic
+    );
+    assert_eq!(ApiType::detect("http://localhost:5001"), ApiType::KoboldCpp);
+    assert_eq!(
+        ApiType::detect("http://localhost:5001/api/v1/generate"),
+        ApiType::KoboldCpp
+    );
+    assert_eq!(
+        ApiType::detect("http://localhost:11434/v1"),
+        ApiType::OpenAi
+    );
+    assert_eq!(
+        ApiType::detect("https://openrouter.ai/api/v1"),
+        ApiType::OpenAi
+    );
+
+    // Endpoint Normalization
+    assert_eq!(
+        normalize_endpoint_for_type("https://api.anthropic.com", ApiType::Anthropic),
+        "https://api.anthropic.com/v1/messages"
+    );
+    assert_eq!(
+        normalize_endpoint_for_type("http://localhost:5001", ApiType::KoboldCpp),
+        "http://localhost:5001/api/extra/generate/stream"
+    );
+    assert_eq!(
+        normalize_endpoint_for_type("http://localhost:11434/v1", ApiType::OpenAi),
+        "http://localhost:11434/v1/chat/completions"
+    );
+
+    // Models Endpoint Normalization
+    assert_eq!(
+        normalize_models_endpoint_for_type("https://api.anthropic.com", ApiType::Anthropic),
+        "https://api.anthropic.com/v1/models"
+    );
+    assert_eq!(
+        normalize_models_endpoint_for_type("http://localhost:5001", ApiType::KoboldCpp),
+        "http://localhost:5001/api/v1/model"
+    );
+}
+
+#[test]
+fn test_reasoning_streamer_wrapping() {
+    use engine::llm::ReasoningStreamer;
+
+    let mut streamed_tokens = Vec::new();
+    {
+        let mut streamer = ReasoningStreamer::new(|tok| {
+            streamed_tokens.push(tok);
+        });
+
+        // Stream reasoning
+        streamer.push_reasoning("Analyzing situation... ");
+        streamer.push_reasoning("The best response is to smile.");
+        // Stream regular content
+        streamer.push_content("Hello! ");
+        streamer.push_content("How are you today?");
+        let final_text = streamer.finish();
+
+        assert!(final_text.starts_with("<think>\nAnalyzing situation... The best response is to smile.\n</think>\n\nHello! How are you today?"));
+    }
+
+    // Stream finishes while still in reasoning
+    let mut streamed_tokens2 = Vec::new();
+    {
+        let mut streamer = ReasoningStreamer::new(|tok| {
+            streamed_tokens2.push(tok);
+        });
+        streamer.push_reasoning("Just thinking deep thoughts");
+        let final_text = streamer.finish();
+        assert!(final_text.ends_with("</think>\n\n"));
+    }
+}
+
+#[test]
+fn test_chat_fork_at_message() {
+    let mut tree = ChatTree::new("char_1".to_string(), "Original Campaign".to_string());
+    let m1 = tree.append_message(AuthorRole::Assistant, "Prologue".to_string(), None);
+    let m2 = tree.append_message(AuthorRole::User, "Step forward".to_string(), Some(m1));
+    let m3 = tree.append_message(
+        AuthorRole::Assistant,
+        "Encounter a crossroad".to_string(),
+        Some(m2),
+    );
+    let _m4 = tree.append_message(AuthorRole::User, "Take the dark path".to_string(), Some(m3));
+
+    // Fork at message 3 (crossroad)
+    let forked = tree
+        .fork_at_message(m3, Some("Light Path Campaign".to_string()))
+        .expect("fork should succeed");
+
+    assert_eq!(forked.title, "Light Path Campaign");
+    assert_eq!(forked.character_id, "char_1");
+    let active_nodes = forked.get_active_view_nodes();
+    assert_eq!(active_nodes.len(), 3);
+    assert_eq!(active_nodes[0].content, "Prologue");
+    assert_eq!(active_nodes[1].content, "Step forward");
+    assert_eq!(active_nodes[2].content, "Encounter a crossroad");
+
+    // Now in the forked tree, append a different choice
+    let forked_last_id = forked.get_last_node_id();
+    let mut forked_mut = forked;
+    forked_mut.append_message(
+        AuthorRole::User,
+        "Take the bright sunlit path".to_string(),
+        forked_last_id,
+    );
+    assert_eq!(forked_mut.get_active_view_nodes().len(), 4);
+    assert_eq!(tree.get_active_view_nodes().len(), 4);
+    assert!(
+        tree.get_active_view_nodes()[3]
+            .content
+            .contains("Take the dark path")
+    );
+    assert!(
+        forked_mut.get_active_view_nodes()[3]
+            .content
+            .contains("Take the bright sunlit path")
+    );
+}
+
+#[test]
+fn test_regex_rules_application() {
+    use engine::regex_engine::{RegexRule, apply_regex_rules};
+
+    let rules = vec![
+        RegexRule {
+            id: "r1".to_string(),
+            name: "Strip Prefix".to_string(),
+            pattern: r"^Character:\s*".to_string(),
+            replacement: "".to_string(),
+            enabled: true,
+            case_insensitive: true,
+            run_on_output: true,
+            run_on_input: false,
+            run_on_display: true,
+        },
+        RegexRule {
+            id: "r2".to_string(),
+            name: "Format OOC".to_string(),
+            pattern: r"\((?:OOC|ooc):?\s*(.*?)\)".to_string(),
+            replacement: r#"<span class="rp-ooc">($1)</span>"#.to_string(),
+            enabled: true,
+            case_insensitive: false,
+            run_on_output: false,
+            run_on_input: false,
+            run_on_display: true,
+        },
+    ];
+
+    // Test output rule
+    let output_text = "character: Hello adventurer!";
+    let processed_output = apply_regex_rules(output_text, &rules, |r| r.run_on_output);
+    assert_eq!(processed_output, "Hello adventurer!");
+
+    // Test display rule
+    let display_text = "Hello! (OOC: test note)";
+    let processed_display = apply_regex_rules(display_text, &rules, |r| r.run_on_display);
+    assert_eq!(
+        processed_display,
+        r#"Hello! <span class="rp-ooc">(test note)</span>"#
+    );
+}
+
+#[test]
+fn test_emotion_classification() {
+    use engine::emotion::{Emotion, classify_emotion};
+
+    assert_eq!(
+        classify_emotion("*smiles warmly at you* Hello!"),
+        Emotion::Joy
+    );
+    assert_eq!(
+        classify_emotion("*giggles happily* That was funny!"),
+        Emotion::Joy
+    );
+    assert_eq!(
+        classify_emotion("*blushes deeply and looks away* I-it's not like that..."),
+        Emotion::Blush
+    );
+    assert_eq!(
+        classify_emotion("*fidgets nervously, face turning red*"),
+        Emotion::Blush
+    );
+    assert_eq!(
+        classify_emotion("*glares furiously with clenched fists* Back off!"),
+        Emotion::Anger
+    );
+    assert_eq!(
+        classify_emotion("*scowls and growls angrily*"),
+        Emotion::Anger
+    );
+    assert_eq!(
+        classify_emotion("*weeps softly with tears running down her cheeks*"),
+        Emotion::Sadness
+    );
+    assert_eq!(
+        classify_emotion("*gasps in utter shock, eyes widening*"),
+        Emotion::Surprise
+    );
+    assert_eq!(
+        classify_emotion("The weather is overcast today with a gentle breeze."),
+        Emotion::Neutral
+    );
+
+    // Test explicit emotion tags
+    assert_eq!(classify_emotion("[joy] I am so thrilled!"), Emotion::Joy);
+    assert_eq!(classify_emotion("[anger] How dare you!"), Emotion::Anger);
+    assert_eq!(classify_emotion("[blush] Thank you..."), Emotion::Blush);
+}
+
+#[test]
+fn test_rag_memory_indexing_and_retrieval() {
+    use engine::rag::{
+        MemoryChunk, compute_embedding, cosine_similarity, format_retrieved_memories,
+        retrieve_relevant_memories,
+    };
+
+    let v1 = compute_embedding(
+        "The ancient obsidian key is hidden under the floorboards in the dusty attic.",
+    );
+    let v2 = compute_embedding("Where can we find the obsidian key?");
+    let v3 = compute_embedding("I love baking fresh strawberry cakes on Sunday mornings.");
+
+    let sim_relevant = cosine_similarity(&v1, &v2);
+    let sim_irrelevant = cosine_similarity(&v2, &v3);
+
+    assert!(sim_relevant > sim_irrelevant);
+    assert!(sim_relevant > 0.25);
+
+    let candidates = vec![
+        MemoryChunk {
+            message_id: uuid::Uuid::new_v4(),
+            role: "assistant".to_string(),
+            author: "Aria".to_string(),
+            content: "We hid the obsidian key under the loose floorboards in the attic."
+                .to_string(),
+            turn_index: 42,
+        },
+        MemoryChunk {
+            message_id: uuid::Uuid::new_v4(),
+            role: "assistant".to_string(),
+            author: "Aria".to_string(),
+            content: "The weather yesterday was sunny and clear.".to_string(),
+            turn_index: 105,
+        },
+        MemoryChunk {
+            message_id: uuid::Uuid::new_v4(),
+            role: "user".to_string(),
+            author: "Traveler".to_string(),
+            content: "I remember we discussed baking sweet strawberry pies.".to_string(),
+            turn_index: 210,
+        },
+    ];
+
+    let retrieved = retrieve_relevant_memories("Where is that obsidian key?", &candidates, 2, 0.20);
+    assert!(!retrieved.is_empty());
+    assert_eq!(retrieved[0].chunk.turn_index, 42);
+    assert!(retrieved[0].chunk.content.contains("obsidian key"));
+
+    let formatted = format_retrieved_memories(&retrieved);
+    assert!(formatted.contains("[Relevant Past Memories"));
+    assert!(formatted.contains("Turn 43"));
 }

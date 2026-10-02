@@ -1,6 +1,6 @@
 use chrono::{DateTime, Utc};
 use loro::{ExportMode, LoroDoc, LoroValue, VersionVector};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::HashMap;
 use uuid::Uuid;
 
@@ -8,15 +8,13 @@ use crate::character::{Character, UserPersona};
 use crate::chat::{ChatTree, Group};
 use crate::lorebook::Lorebook;
 
-/// Tombstone record for tracking deleted entities across distributed peers.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DeletionTombstone {
     pub id: String,
-    pub entity_type: String, // "character" | "chat" | "lorebook" | "persona" | "group"
+    pub entity_type: String,
     pub deleted_at: DateTime<Utc>,
 }
 
-/// The core CRDT document wrapper managing Tavern data.
 pub struct TavernCrdtDoc {
     pub doc: LoroDoc,
 }
@@ -68,285 +66,142 @@ impl TavernCrdtDoc {
         Ok(())
     }
 
+    #[inline]
     pub fn commit(&self) {
         self.doc.commit();
     }
 
-    // --- Characters ---
+    // --- Generic Internal CRDT Helpers ---
 
-    pub fn set_character(&self, character: &Character) -> Result<(), String> {
-        let chars_map = self.doc.get_map("characters");
-        let json_str = serde_json::to_string(character).map_err(|e| e.to_string())?;
-        chars_map
-            .insert(&character.id, json_str)
-            .map_err(|e| e.to_string())?;
+    fn put_entity<T: Serialize>(
+        &self,
+        map_name: &str,
+        entity_type: &str,
+        id: &str,
+        entity: &T,
+    ) -> Result<(), String> {
+        let map = self.doc.get_map(map_name);
+        let json_str = serde_json::to_string(entity).map_err(|e| e.to_string())?;
+        map.insert(id, json_str).map_err(|e| e.to_string())?;
 
-        // Remove from tombstones if it was previously marked deleted
+        // Clear any prior tombstone
         let tombstones_map = self.doc.get_map("tombstones");
-        let tomb_key = format!("character:{}", character.id);
+        let tomb_key = format!("{entity_type}:{id}");
         let _ = tombstones_map.delete(&tomb_key);
 
         self.commit();
         Ok(())
+    }
+
+    fn delete_entity(&self, map_name: &str, entity_type: &str, id: &str) -> Result<(), String> {
+        let map = self.doc.get_map(map_name);
+        let _ = map.delete(id);
+
+        let tombstones_map = self.doc.get_map("tombstones");
+        let tombstone = DeletionTombstone {
+            id: id.to_string(),
+            entity_type: entity_type.to_string(),
+            deleted_at: Utc::now(),
+        };
+        let tomb_json = serde_json::to_string(&tombstone).map_err(|e| e.to_string())?;
+        tombstones_map
+            .insert(&format!("{entity_type}:{id}"), tomb_json)
+            .map_err(|e| e.to_string())?;
+
+        self.commit();
+        Ok(())
+    }
+
+    fn list_entities<T: DeserializeOwned>(&self, map_name: &str) -> Vec<T> {
+        let map = self.doc.get_map(map_name);
+        let mut list = Vec::new();
+        if let LoroValue::Map(inner_map) = map.get_value() {
+            for val in inner_map.values() {
+                if let LoroValue::String(s) = val
+                    && let Ok(item) = serde_json::from_str::<T>(s)
+                {
+                    list.push(item);
+                }
+            }
+        }
+        list
+    }
+
+    // --- Public Entity APIs ---
+
+    pub fn set_character(&self, character: &Character) -> Result<(), String> {
+        self.put_entity("characters", "character", &character.id, character)
     }
 
     pub fn delete_character(&self, id: &str) -> Result<(), String> {
-        let chars_map = self.doc.get_map("characters");
-        let _ = chars_map.delete(id);
-
-        let tombstones_map = self.doc.get_map("tombstones");
-        let tombstone = DeletionTombstone {
-            id: id.to_string(),
-            entity_type: "character".to_string(),
-            deleted_at: Utc::now(),
-        };
-        let tomb_json = serde_json::to_string(&tombstone).map_err(|e| e.to_string())?;
-        tombstones_map
-            .insert(&format!("character:{id}"), tomb_json)
-            .map_err(|e| e.to_string())?;
-
-        self.commit();
-        Ok(())
+        self.delete_entity("characters", "character", id)
     }
 
     pub fn get_characters(&self) -> Result<Vec<Character>, String> {
-        let chars_map = self.doc.get_map("characters");
-        let mut list = Vec::new();
-        let value = chars_map.get_value();
-        if let LoroValue::Map(map) = value {
-            for (_, val) in map.iter() {
-                if let LoroValue::String(s) = val
-                    && let Ok(char_obj) = serde_json::from_str::<Character>(s)
-                {
-                    list.push(char_obj);
-                }
-            }
-        }
+        let mut list: Vec<Character> = self.list_entities("characters");
         list.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(list)
     }
 
-    // --- Chats ---
-
     pub fn set_chat(&self, chat: &ChatTree) -> Result<(), String> {
-        let chats_map = self.doc.get_map("chats");
-        let json_str = serde_json::to_string(chat).map_err(|e| e.to_string())?;
-        chats_map
-            .insert(&chat.id.to_string(), json_str)
-            .map_err(|e| e.to_string())?;
-
-        let tombstones_map = self.doc.get_map("tombstones");
-        let tomb_key = format!("chat:{}", chat.id);
-        let _ = tombstones_map.delete(&tomb_key);
-
-        self.commit();
-        Ok(())
+        self.put_entity("chats", "chat", &chat.id.to_string(), chat)
     }
 
     pub fn delete_chat(&self, id: &Uuid) -> Result<(), String> {
-        let chats_map = self.doc.get_map("chats");
-        let id_str = id.to_string();
-        let _ = chats_map.delete(&id_str);
-
-        let tombstones_map = self.doc.get_map("tombstones");
-        let tombstone = DeletionTombstone {
-            id: id_str.clone(),
-            entity_type: "chat".to_string(),
-            deleted_at: Utc::now(),
-        };
-        let tomb_json = serde_json::to_string(&tombstone).map_err(|e| e.to_string())?;
-        tombstones_map
-            .insert(&format!("chat:{id_str}"), tomb_json)
-            .map_err(|e| e.to_string())?;
-
-        self.commit();
-        Ok(())
+        self.delete_entity("chats", "chat", &id.to_string())
     }
 
     pub fn get_chats(&self) -> Result<Vec<ChatTree>, String> {
-        let chats_map = self.doc.get_map("chats");
-        let mut list = Vec::new();
-        let value = chats_map.get_value();
-        if let LoroValue::Map(map) = value {
-            for (_, val) in map.iter() {
-                if let LoroValue::String(s) = val
-                    && let Ok(chat) = serde_json::from_str::<ChatTree>(s)
-                {
-                    list.push(chat);
-                }
-            }
-        }
+        let mut list: Vec<ChatTree> = self.list_entities("chats");
         list.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(list)
     }
 
-    // --- Personas ---
-
     pub fn set_persona(&self, persona: &UserPersona) -> Result<(), String> {
-        let personas_map = self.doc.get_map("personas");
-        let json_str = serde_json::to_string(persona).map_err(|e| e.to_string())?;
-        personas_map
-            .insert(&persona.id, json_str)
-            .map_err(|e| e.to_string())?;
-
-        let tombstones_map = self.doc.get_map("tombstones");
-        let tomb_key = format!("persona:{}", persona.id);
-        let _ = tombstones_map.delete(&tomb_key);
-
-        self.commit();
-        Ok(())
+        self.put_entity("personas", "persona", &persona.id, persona)
     }
 
     pub fn delete_persona(&self, id: &str) -> Result<(), String> {
-        let personas_map = self.doc.get_map("personas");
-        let _ = personas_map.delete(id);
-
-        let tombstones_map = self.doc.get_map("tombstones");
-        let tombstone = DeletionTombstone {
-            id: id.to_string(),
-            entity_type: "persona".to_string(),
-            deleted_at: Utc::now(),
-        };
-        let tomb_json = serde_json::to_string(&tombstone).map_err(|e| e.to_string())?;
-        tombstones_map
-            .insert(&format!("persona:{id}"), tomb_json)
-            .map_err(|e| e.to_string())?;
-
-        self.commit();
-        Ok(())
+        self.delete_entity("personas", "persona", id)
     }
 
     pub fn get_personas(&self) -> Result<Vec<UserPersona>, String> {
-        let personas_map = self.doc.get_map("personas");
-        let mut list = Vec::new();
-        let value = personas_map.get_value();
-        if let LoroValue::Map(map) = value {
-            for (_, val) in map.iter() {
-                if let LoroValue::String(s) = val
-                    && let Ok(persona) = serde_json::from_str::<UserPersona>(s)
-                {
-                    list.push(persona);
-                }
-            }
-        }
-        Ok(list)
+        Ok(self.list_entities("personas"))
     }
 
-    // --- Lorebooks ---
-
     pub fn set_lorebook(&self, lorebook: &Lorebook) -> Result<(), String> {
-        let lorebooks_map = self.doc.get_map("lorebooks");
-        let json_str = serde_json::to_string(lorebook).map_err(|e| e.to_string())?;
-        lorebooks_map
-            .insert(&lorebook.id, json_str)
-            .map_err(|e| e.to_string())?;
-
-        let tombstones_map = self.doc.get_map("tombstones");
-        let tomb_key = format!("lorebook:{}", lorebook.id);
-        let _ = tombstones_map.delete(&tomb_key);
-
-        self.commit();
-        Ok(())
+        self.put_entity("lorebooks", "lorebook", &lorebook.id, lorebook)
     }
 
     pub fn delete_lorebook(&self, id: &str) -> Result<(), String> {
-        let lorebooks_map = self.doc.get_map("lorebooks");
-        let _ = lorebooks_map.delete(id);
-
-        let tombstones_map = self.doc.get_map("tombstones");
-        let tombstone = DeletionTombstone {
-            id: id.to_string(),
-            entity_type: "lorebook".to_string(),
-            deleted_at: Utc::now(),
-        };
-        let tomb_json = serde_json::to_string(&tombstone).map_err(|e| e.to_string())?;
-        tombstones_map
-            .insert(&format!("lorebook:{id}"), tomb_json)
-            .map_err(|e| e.to_string())?;
-
-        self.commit();
-        Ok(())
+        self.delete_entity("lorebooks", "lorebook", id)
     }
 
     pub fn get_lorebooks(&self) -> Result<Vec<Lorebook>, String> {
-        let lorebooks_map = self.doc.get_map("lorebooks");
-        let mut list = Vec::new();
-        let value = lorebooks_map.get_value();
-        if let LoroValue::Map(map) = value {
-            for (_, val) in map.iter() {
-                if let LoroValue::String(s) = val
-                    && let Ok(book) = serde_json::from_str::<Lorebook>(s)
-                {
-                    list.push(book);
-                }
-            }
-        }
-
+        let mut list: Vec<Lorebook> = self.list_entities("lorebooks");
         list.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(list)
     }
 
-    // --- Groups ---
-
     pub fn set_group(&self, group: &Group) -> Result<(), String> {
-        let groups_map = self.doc.get_map("groups");
-        let json_str = serde_json::to_string(group).map_err(|e| e.to_string())?;
-        groups_map
-            .insert(&group.id, json_str)
-            .map_err(|e| e.to_string())?;
-
-        let tombstones_map = self.doc.get_map("tombstones");
-        let tomb_key = format!("group:{}", group.id);
-        let _ = tombstones_map.delete(&tomb_key);
-
-        self.commit();
-        Ok(())
+        self.put_entity("groups", "group", &group.id, group)
     }
 
     pub fn delete_group(&self, id: &str) -> Result<(), String> {
-        let groups_map = self.doc.get_map("groups");
-        let _ = groups_map.delete(id);
-
-        let tombstones_map = self.doc.get_map("tombstones");
-        let tombstone = DeletionTombstone {
-            id: id.to_string(),
-            entity_type: "group".to_string(),
-            deleted_at: Utc::now(),
-        };
-        let tomb_json = serde_json::to_string(&tombstone).map_err(|e| e.to_string())?;
-        tombstones_map
-            .insert(&format!("group:{id}"), tomb_json)
-            .map_err(|e| e.to_string())?;
-
-        self.commit();
-        Ok(())
+        self.delete_entity("groups", "group", id)
     }
 
     pub fn get_groups(&self) -> Result<Vec<Group>, String> {
-        let groups_map = self.doc.get_map("groups");
-        let mut list = Vec::new();
-        let value = groups_map.get_value();
-        if let LoroValue::Map(map) = value {
-            for (_, val) in map.iter() {
-                if let LoroValue::String(s) = val
-                    && let Ok(group) = serde_json::from_str::<Group>(s)
-                {
-                    list.push(group);
-                }
-            }
-        }
+        let mut list: Vec<Group> = self.list_entities("groups");
         list.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(list)
     }
 
-    // --- Tombstones ---
-
     pub fn get_tombstones(&self) -> Result<HashMap<String, DeletionTombstone>, String> {
-        let tombstones_map = self.doc.get_map("tombstones");
+        let map = self.doc.get_map("tombstones");
         let mut map_out = HashMap::new();
-        let value = tombstones_map.get_value();
-        if let LoroValue::Map(map) = value {
-            for (k, val) in map.iter() {
+        if let LoroValue::Map(inner) = map.get_value() {
+            for (k, val) in inner.iter() {
                 if let LoroValue::String(s) = val
                     && let Ok(tomb) = serde_json::from_str::<DeletionTombstone>(s)
                 {

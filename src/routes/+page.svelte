@@ -1,36 +1,33 @@
 <script lang="ts">
-  import { onMount, onDestroy, tick } from 'svelte';
-  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { tick, untrack } from "svelte";
+  import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
   import type {
     Character,
     Group,
-    GroupMember,
     TurnMode,
     ChatSummary,
     MessageViewNode,
     AppSettings,
     UserPersona,
-  } from '$lib/types';
-
+    ContextBreakdown,
+    ChatTree,
+  } from "$lib/types";
   import {
     getAllCharacters,
     saveCharacter,
     deleteCharacter,
     importCharacterCard,
     getAllGroups,
-    getGroup,
     saveGroup,
     deleteGroup,
     createGroupChat,
     listGroupChats,
-    setMessageAuthor,
     createChat,
     loadChat,
     listChats,
     deleteChat,
     importChatJsonl,
-    exportChatJsonl,
     getActiveMessages,
     appendMessage,
     editMessage,
@@ -42,70 +39,158 @@
     saveUserPersona,
     generateReply,
     abortGeneration,
-  } from '$lib/api';
+    calculateContextBreakdown,
+    updateChatAuthorsNote,
+    forkChatAtMessage,
+  } from "$lib/api";
+  import Sidebar from "$lib/components/Sidebar.svelte";
+  import ChatMessage from "$lib/components/ChatMessage.svelte";
+  import ChatInput from "$lib/components/ChatInput.svelte";
+  import SettingsModal from "$lib/components/SettingsModal.svelte";
+  import PersonaModal from "$lib/components/PersonaModal.svelte";
+  import CharacterEditorModal from "$lib/components/CharacterEditorModal.svelte";
+  import CreatorNotesModal from "$lib/components/CreatorNotesModal.svelte";
+  import ImagePreviewModal from "$lib/components/ImagePreviewModal.svelte";
+  import LorebookModal from "$lib/components/LorebookModal.svelte";
+  import SyncModal from "$lib/components/SyncModal.svelte";
+  import GroupModal from "$lib/components/GroupModal.svelte";
+  import GroupTurnBar from "$lib/components/GroupTurnBar.svelte";
+  import ContextBar from "$lib/components/ContextBar.svelte";
+  import AuthorsNoteModal from "$lib/components/AuthorsNoteModal.svelte";
 
-  import Sidebar from '$lib/components/Sidebar.svelte';
-  import ChatMessage from '$lib/components/ChatMessage.svelte';
-  import ChatInput from '$lib/components/ChatInput.svelte';
-  import SettingsModal from '$lib/components/SettingsModal.svelte';
-  import PersonaModal from '$lib/components/PersonaModal.svelte';
-  import CharacterEditorModal from '$lib/components/CharacterEditorModal.svelte';
-  import CreatorNotesModal from '$lib/components/CreatorNotesModal.svelte';
-  import ImagePreviewModal from '$lib/components/ImagePreviewModal.svelte';
-  import LorebookModal from '$lib/components/LorebookModal.svelte';
-  import SyncModal from '$lib/components/SyncModal.svelte';
-  import GroupModal from '$lib/components/GroupModal.svelte';
-  import GroupTurnBar from '$lib/components/GroupTurnBar.svelte';
-  let characters: Character[] = [];
-  let activeCharacter: Character | null = null;
-  let groups: Group[] = [];
-  let activeGroup: Group | null = null;
-  let chats: ChatSummary[] = [];
-  let activeChatId: string | null = null;
-  let messages: MessageViewNode[] = [];
-  let settings: AppSettings;
-  let userPersona: UserPersona;
+  let characters: Character[] = $state([]);
+  let activeCharacter: Character | null = $state(null);
+  let groups: Group[] = $state([]);
+  let activeGroup: Group | null = $state(null);
+  let chats: ChatSummary[] = $state([]);
+  let activeChatId: string | null = $state(null);
+  let messages: MessageViewNode[] = $state([]);
+  let settings: AppSettings = $state({
+    endpoint: "",
+    api_key: "",
+    active_model: "",
+    temperature: 0,
+    top_p: 0,
+    frequency_penalty: 0,
+    presence_penalty: 0,
+    max_tokens: 0,
+    max_context_tokens: 0,
+    system_template: "",
+    stop_sequences: [],
+    active_character_id: null,
+    active_chat_id: null,
+  });
 
-  let isSidebarOpen = true;
-  let isGenerating = false;
-  let streamingText = '';
-  let continuingMessageId: string | null = null;
-  let streamingSpeakerName = '';
-  let streamingSpeakerAvatar: string | null = null;
-  let currentStreamingCharacterId: string | null = null;
+  let userPersona: UserPersona | null = $state(null);
+
+  let isSidebarOpen = $state(true);
+  let isGenerating = $state(false);
+  let streamingText = $state("");
+  let continuingMessageId: string | null = $state(null);
+  let streamingSpeakerName = $state("");
+  let streamingSpeakerAvatar: string | null = $state(null);
+  let currentStreamingCharacterId: string | null = $state(null);
 
   // Modals
-  let isSettingsOpen = false;
-  let isPersonaOpen = false;
-  let isCharEditorOpen = false;
-  let isGroupModalOpen = false;
-  let isCreatorNotesOpen = false;
-  let isImagePreviewOpen = false;
-  let isLorebookOpen = false;
-  let isSyncOpen = false;
-  let previewImageSrc: string | null = null;
-  let previewImageAlt: string = '';
-  let editingCharacter: Character | null = null;
-  let editingGroup: Group | null = null;
+  let isSettingsOpen = $state(false);
+  let isPersonaOpen = $state(false);
+  let isCharEditorOpen = $state(false);
+  let isGroupModalOpen = $state(false);
+  let isCreatorNotesOpen = $state(false);
+  let isImagePreviewOpen = $state(false);
+  let isLorebookOpen = $state(false);
+  let isSyncOpen = $state(false);
+  let previewImageSrc: string | null = $state(null);
+  let previewImageAlt: string = $state("");
+  let editingCharacter: Character | null = $state(null);
+  let editingGroup: Group | null = $state(null);
   let chatContainerEl: HTMLElement;
-  let unlistenToken: UnlistenFn | null = null;
-  let unlistenStart: UnlistenFn | null = null;
-  let unlistenDone: UnlistenFn | null = null;
+  let inputDraftText = $state("");
+  let contextBreakdown: ContextBreakdown | null = $state(null);
+  let activeChatTree: ChatTree | null = $state(null);
+  let isAuthorsNoteModalOpen = $state(false);
+  let currentDraftText = "";
+  let draftDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 
-  $: isGroupChat = !!activeGroup;
-  $: nextSpeakerId = computeNextSpeaker(activeGroup, messages);
+  async function refreshContextBreakdown(draft?: string) {
+    if (!activeCharacter && !activeGroup) {
+      contextBreakdown = null;
+      return;
+    }
 
-  function computeNextSpeaker(grp: Group | null, msgs: MessageViewNode[]): string | null {
+    try {
+      contextBreakdown = await calculateContextBreakdown(
+        draft !== undefined ? draft : currentDraftText,
+      );
+    } catch (e) {
+      console.error("Failed to calculate context breakdown:", e);
+    }
+  }
+
+  function handleDraftChange(newDraft: string) {
+    currentDraftText = newDraft;
+    if (draftDebounceTimer) clearTimeout(draftDebounceTimer);
+    draftDebounceTimer = setTimeout(() => {
+      refreshContextBreakdown(newDraft);
+    }, 250);
+  }
+
+  async function handleSaveAuthorsNote(
+    note: string,
+    depth: number,
+    interval: number,
+  ) {
+    await updateChatAuthorsNote(note, depth, interval);
+    if (activeChatTree) {
+      activeChatTree.authors_note = note;
+      activeChatTree.authors_note_depth = depth;
+      activeChatTree.authors_note_interval = interval;
+    }
+    await refreshContextBreakdown();
+  }
+
+  async function handleForkChat(messageId: string) {
+    const titlePrompt = prompt(
+      "Enter a title for the new forked chat (or leave blank):",
+    );
+    if (titlePrompt === null) return;
+    try {
+      const forked = await forkChatAtMessage(
+        messageId,
+        titlePrompt.trim() || undefined,
+      );
+      activeChatTree = forked;
+      activeChatId = forked.id;
+      if (activeGroup) {
+        await refreshChatsForGroup(activeGroup.id);
+      } else if (activeCharacter) {
+        await refreshChats(activeCharacter.id);
+      }
+      await refreshMessages();
+    } catch (e) {
+      console.error("Fork chat failed:", e);
+      alert(`Failed to fork chat: ${e}`);
+    }
+  }
+
+  let nextSpeakerId = $derived(computeNextSpeaker(activeGroup, messages));
+
+  function computeNextSpeaker(
+    grp: Group | null,
+    msgs: MessageViewNode[],
+  ): string | null {
     if (!grp || grp.members.length === 0) return null;
     const enabled = grp.members.filter((m) => m.enabled && !m.mute);
     if (enabled.length === 0) return null;
 
-    if (grp.turn_mode === 'Manual') {
+    if (grp.turn_mode === "Manual") {
       return enabled[0].character_id;
     }
 
-    if (grp.turn_mode === 'Natural') {
-      const lastSpeaker = [...msgs].reverse().find((m) => m.role === 'Assistant')?.character_id;
+    if (grp.turn_mode === "Natural") {
+      const lastSpeaker = [...msgs]
+        .reverse()
+        .find((m) => m.role === "Assistant")?.character_id;
       if (lastSpeaker) {
         const idx = enabled.findIndex((m) => m.character_id === lastSpeaker);
         if (idx >= 0) {
@@ -117,101 +202,140 @@
 
     return enabled[0].character_id;
   }
-  onMount(async () => {
-    // 0. Auto-close sidebar on mobile devices on startup
-    if (typeof window !== 'undefined' && window.innerWidth <= 768) {
-      isSidebarOpen = false;
-    }
 
-    // 1. Load initial settings and persona
-    settings = await getSettings();
-    userPersona = await getActiveUserPersona();
+  $effect(() => {
+    untrack(() => {
+      // 0. Auto-close sidebar on mobile devices on startup
+      if (typeof window !== "undefined" && window.innerWidth <= 768) {
+        isSidebarOpen = false;
+      }
+    });
 
-    // 2. Load characters & groups
-    await refreshCharacters();
-    await refreshGroups();
+    let active = true;
+    const cleanups: UnlistenFn[] = [];
 
-    // 3. Select active or initial character/group & chat
-    if (settings.active_character_id) {
-      if (settings.active_character_id.startsWith('group:')) {
-        const gid = settings.active_character_id.replace('group:', '');
-        const foundGrp = groups.find((g) => g.id === gid);
-        if (foundGrp) {
-          activeGroup = foundGrp;
-          activeCharacter = null;
-          await refreshChatsForGroup(gid);
+    // 2. Setup listeners IMMEDIATELY (do not wait for DB queries)
+    const setupListeners = async () => {
+      try {
+        const u1 = await listen<{
+          character_id: string;
+          character_name: string;
+        }>("llm-start", (event) => {
+          if (!active) return;
+          currentStreamingCharacterId = event.payload.character_id;
+          streamingSpeakerName = event.payload.character_name;
+          const found = characters.find(
+            (c) => c.id === event.payload.character_id,
+          );
+          streamingSpeakerAvatar = found?.avatar_data_url || null;
+        });
+        cleanups.push(u1);
+
+        const u2 = await listen<string>("llm-token", async (event) => {
+          if (!active) return;
+          streamingText += event.payload;
+          await scrollToBottom();
+        });
+        cleanups.push(u2);
+
+        const u3 = await listen("llm-done", async () => {
+          if (!active) return;
+          isGenerating = false;
+          continuingMessageId = null;
+          streamingText = "";
+          currentStreamingCharacterId = null;
+          streamingSpeakerName = "";
+          streamingSpeakerAvatar = null;
+          await refreshMessages();
+          if (activeGroup) await refreshChatsForGroup(activeGroup.id);
+          else if (activeCharacter) await refreshChats(activeCharacter.id);
+        });
+        cleanups.push(u3);
+      } catch (err) {
+        console.error(
+          "Failed to register Tauri event listeners on Android:",
+          err,
+        );
+      }
+    };
+
+    // 3. Load initial data in parallel
+    const bootstrapData = async () => {
+      try {
+        const [loadedSettings, loadedPersona] = await Promise.all([
+          getSettings(),
+          getActiveUserPersona(),
+        ]);
+        if (!active) return;
+
+        settings = loadedSettings;
+        userPersona = loadedPersona;
+
+        await Promise.all([refreshCharacters(), refreshGroups()]);
+        if (!active) return;
+
+        // Selection logic
+        if (settings.active_character_id) {
+          if (settings.active_character_id.startsWith("group:")) {
+            const gid = settings.active_character_id.replace("group:", "");
+            const foundGrp = groups.find((g) => g.id === gid);
+            if (foundGrp) {
+              activeGroup = foundGrp;
+              activeCharacter = null;
+              await refreshChatsForGroup(gid);
+            }
+          } else {
+            const found = characters.find(
+              (c) => c.id === settings.active_character_id,
+            );
+            if (found) {
+              activeCharacter = found;
+              activeGroup = null;
+              await refreshChats(activeCharacter.id);
+            }
+          }
         }
-      } else {
-        const found = characters.find((c) => c.id === settings.active_character_id);
-        if (found) {
-          activeCharacter = found;
-          activeGroup = null;
-          await refreshChats(activeCharacter.id);
+
+        if (!activeCharacter && !activeGroup) {
+          if (characters.length > 0) {
+            activeCharacter = characters[0];
+            await refreshChats(activeCharacter.id);
+          } else if (groups.length > 0) {
+            activeGroup = groups[0];
+            await refreshChatsForGroup(activeGroup.id);
+          }
         }
+
+        const currentTargetId = activeGroup
+          ? activeGroup.id
+          : activeCharacter?.id;
+        if (currentTargetId) {
+          if (
+            settings.active_chat_id &&
+            chats.some((c) => c.id === settings.active_chat_id)
+          ) {
+            await handleSelectChat(settings.active_chat_id);
+          } else if (chats.length > 0) {
+            await handleSelectChat(chats[0].id);
+          } else {
+            if (activeGroup) await handleNewGroupChat(activeGroup.id);
+            else if (activeCharacter) await handleNewChat(activeCharacter.id);
+          }
+        }
+      } catch (err) {
+        console.error("Bootstrap data loading error:", err);
       }
-    }
+    };
 
-    if (!activeCharacter && !activeGroup) {
-      if (characters.length > 0) {
-        activeCharacter = characters[0];
-        await refreshChats(activeCharacter.id);
-      } else if (groups.length > 0) {
-        activeGroup = groups[0];
-        await refreshChatsForGroup(activeGroup.id);
-      }
-    }
+    // Run both tasks
+    setupListeners();
+    bootstrapData();
 
-    if (activeGroup) {
-      if (settings.active_chat_id && chats.some((c) => c.id === settings.active_chat_id)) {
-        await handleSelectChat(settings.active_chat_id);
-      } else if (chats.length > 0) {
-        await handleSelectChat(chats[0].id);
-      } else {
-        await handleNewGroupChat(activeGroup.id);
-      }
-    } else if (activeCharacter) {
-      if (settings.active_chat_id && chats.some((c) => c.id === settings.active_chat_id)) {
-        await handleSelectChat(settings.active_chat_id);
-      } else if (chats.length > 0) {
-        await handleSelectChat(chats[0].id);
-      } else {
-        await handleNewChat(activeCharacter.id);
-      }
-    }
-
-    // 4. Setup LLM streaming listeners
-    unlistenStart = await listen<{ character_id: string; character_name: string }>('llm-start', (event) => {
-      currentStreamingCharacterId = event.payload.character_id;
-      streamingSpeakerName = event.payload.character_name;
-      const found = characters.find((c) => c.id === event.payload.character_id);
-      streamingSpeakerAvatar = found?.avatar_data_url || null;
-    });
-
-    unlistenToken = await listen<string>('llm-token', async (event) => {
-      streamingText += event.payload;
-      await scrollToBottom();
-    });
-
-    unlistenDone = await listen('llm-done', async () => {
-      isGenerating = false;
-      continuingMessageId = null;
-      streamingText = '';
-      currentStreamingCharacterId = null;
-      streamingSpeakerName = '';
-      streamingSpeakerAvatar = null;
-      await refreshMessages();
-      if (activeGroup) {
-        await refreshChatsForGroup(activeGroup.id);
-      } else if (activeCharacter) {
-        await refreshChats(activeCharacter.id);
-      }
-    });
-  });
-
-  onDestroy(() => {
-    if (unlistenStart) unlistenStart();
-    if (unlistenToken) unlistenToken();
-    if (unlistenDone) unlistenDone();
+    // Synchronous teardown
+    return () => {
+      active = false;
+      cleanups.forEach((fn) => fn());
+    };
   });
 
   async function scrollToBottom() {
@@ -223,9 +347,11 @@
 
   async function refreshCharacters() {
     characters = await getAllCharacters();
+
     if (activeCharacter) {
       const updated = characters.find((c) => c.id === activeCharacter?.id);
-      activeCharacter = updated || (characters.length > 0 ? characters[0] : null);
+      activeCharacter =
+        updated || (characters.length > 0 ? characters[0] : null);
     }
   }
 
@@ -248,6 +374,7 @@
   async function refreshMessages() {
     messages = await getActiveMessages();
     await scrollToBottom();
+    await refreshContextBreakdown();
   }
 
   async function handleSyncSuccess() {
@@ -265,7 +392,7 @@
       userPersona = await getActiveUserPersona();
       settings = await getSettings();
     } catch (e) {
-      console.error('Error refreshing state after sync:', e);
+      console.error("Error refreshing state after sync:", e);
     }
   }
 
@@ -392,6 +519,7 @@
 
   async function handleNewGroupChat(groupId: string) {
     const tree = await createGroupChat(groupId);
+    activeChatTree = tree;
     activeChatId = tree.id;
     await refreshChatsForGroup(groupId);
     await refreshMessages();
@@ -401,16 +529,16 @@
     if (isGenerating) return;
     isGenerating = true;
     continuingMessageId = null;
-    streamingText = '';
+    streamingText = "";
     const charObj = characters.find((c) => c.id === characterId);
-    streamingSpeakerName = charObj?.card.data.name || 'Character';
+    streamingSpeakerName = charObj?.card.data.name || "Character";
     streamingSpeakerAvatar = charObj?.avatar_data_url || null;
     currentStreamingCharacterId = characterId;
 
     try {
       await generateReply(false, false, characterId);
     } catch (e) {
-      console.error('Trigger speaker failed:', e);
+      console.error("Trigger speaker failed:", e);
       isGenerating = false;
       alert(`Generation failed: ${e}`);
     }
@@ -419,20 +547,24 @@
   async function handleNextTurn() {
     if (isGenerating) return;
     if (activeGroup) {
-      const targetId = nextSpeakerId || (activeGroup.members.length > 0 ? activeGroup.members[0].character_id : null);
+      const targetId =
+        nextSpeakerId ||
+        (activeGroup.members.length > 0
+          ? activeGroup.members[0].character_id
+          : null);
       if (targetId) {
         await handleTriggerSpeaker(targetId);
       } else {
-        await handleSendMessage('');
+        await handleSendMessage("");
       }
     } else {
-      await handleSendMessage('');
+      await handleSendMessage("");
     }
   }
 
   async function handleToggleTurnMode() {
     if (!activeGroup) return;
-    const modes: TurnMode[] = ['Natural', 'Manual', 'Random'];
+    const modes: TurnMode[] = ["Natural", "Manual", "Random"];
     const curIdx = modes.indexOf(activeGroup.turn_mode);
     const nextMode = modes[(curIdx + 1) % modes.length];
     const updated: Group = {
@@ -460,7 +592,7 @@
   async function handleToggleMute(characterId: string) {
     if (!activeGroup) return;
     const updatedMembers = activeGroup.members.map((m) =>
-      m.character_id === characterId ? { ...m, mute: !m.mute } : m
+      m.character_id === characterId ? { ...m, mute: !m.mute } : m,
     );
     const updated: Group = {
       ...activeGroup,
@@ -472,19 +604,16 @@
     await refreshGroups();
   }
 
-  async function handleSetMessageSpeaker(messageId: string, characterId: string | null, name: string | null) {
-    messages = await setMessageAuthor(messageId, characterId, name);
-  }
-
   // --- Chat Handlers ---
   async function handleSelectChat(chatId: string) {
     activeChatId = chatId;
-    await loadChat(chatId);
+    activeChatTree = await loadChat(chatId);
     await refreshMessages();
   }
 
   async function handleNewChat(characterId: string) {
     const tree = await createChat(characterId);
+    activeChatTree = tree;
     activeChatId = tree.id;
     await refreshChats(characterId);
     await refreshMessages();
@@ -517,8 +646,12 @@
     try {
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
-      const title = file.name.replace(/\.jsonl$/i, '').replace(/\.json$/i, '');
-      const importedTree = await importChatJsonl(bytes, activeCharacter?.id, title);
+      const title = file.name.replace(/\.jsonl$/i, "").replace(/\.json$/i, "");
+      const importedTree = await importChatJsonl(
+        bytes,
+        activeCharacter?.id,
+        title,
+      );
 
       // Update character or group if the imported chat belongs to a different entity
       if (importedTree.group_id) {
@@ -528,8 +661,13 @@
           activeCharacter = null;
           await refreshChatsForGroup(foundGrp.id);
         }
-      } else if (!activeCharacter || activeCharacter.id !== importedTree.character_id) {
-        const found = characters.find((c) => c.id === importedTree.character_id);
+      } else if (
+        !activeCharacter ||
+        activeCharacter.id !== importedTree.character_id
+      ) {
+        const found = characters.find(
+          (c) => c.id === importedTree.character_id,
+        );
         if (found) {
           activeCharacter = found;
           activeGroup = null;
@@ -543,33 +681,15 @@
     }
   }
 
-  async function handleExportChat(chatId: string, title?: string) {
-    try {
-      const jsonlStr = await exportChatJsonl(chatId);
-      const chatTitle = title || (activeCharacter ? `Chat with ${activeCharacter.card.data.name}` : 'chat_log');
-      const sanitizedFilename = chatTitle.replace(/[/\\?%*:|"<>]/g, '_');
-      const blob = new Blob([jsonlStr], { type: 'application/x-jsonlines;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${sanitizedFilename}.jsonl`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      alert(`Export chat failed: ${e}`);
-    }
-  }
-
   // --- Message Actions ---
   async function handleSendMessage(userText: string) {
     if (isGenerating || (!activeCharacter && !activeGroup)) return;
 
     const trimmed = userText.trim();
     if (trimmed) {
-      const parentId = messages.length > 0 ? messages[messages.length - 1].id : null;
-      await appendMessage('User', trimmed, parentId);
+      const parentId =
+        messages.length > 0 ? messages[messages.length - 1].id : null;
+      await appendMessage("User", trimmed, parentId);
       await refreshMessages();
     }
 
@@ -581,26 +701,31 @@
     // Trigger LLM generation
     isGenerating = true;
     continuingMessageId = null;
-    streamingText = '';
+    streamingText = "";
     try {
       await generateReply(false, false, null);
     } catch (e) {
-      console.error('Generation failed:', e);
+      console.error("Generation failed:", e);
       isGenerating = false;
       alert(`Generation failed: ${e}`);
     }
   }
 
   async function handleContinueGeneration() {
-    if (isGenerating || (!activeCharacter && !activeGroup) || messages.length === 0) return;
+    if (
+      isGenerating ||
+      (!activeCharacter && !activeGroup) ||
+      messages.length === 0
+    )
+      return;
     const lastMsg = messages[messages.length - 1];
-    if (lastMsg.role !== 'Assistant') return;
+    if (lastMsg.role !== "Assistant") return;
 
     isGenerating = true;
     try {
       await generateReply(false, true);
     } catch (e) {
-      console.error('Continue generation failed:', e);
+      console.error("Continue generation failed:", e);
       isGenerating = false;
       continuingMessageId = null;
       alert(`Continue failed: ${e}`);
@@ -608,13 +733,18 @@
   }
 
   async function handleRegenerateSwipe() {
-    if (isGenerating || (!activeCharacter && !activeGroup) || messages.length === 0) return;
+    if (
+      isGenerating ||
+      (!activeCharacter && !activeGroup) ||
+      messages.length === 0
+    )
+      return;
     continuingMessageId = null;
-    streamingText = '';
+    streamingText = "";
     try {
       await generateReply(true, false);
     } catch (e) {
-      console.error('Swipe generation failed:', e);
+      console.error("Swipe generation failed:", e);
       isGenerating = false;
       alert(`Swipe failed: ${e}`);
     }
@@ -645,8 +775,15 @@
 
   // --- Settings & Persona ---
   async function handleSaveSettings(updated: AppSettings) {
-    settings = updated;
     await saveSettings(updated);
+
+    settings = updated;
+
+    try {
+      await refreshContextBreakdown();
+    } catch (e) {
+      console.error("Error refreshing state after sync:", e);
+    }
   }
 
   async function handleSavePersona(updated: UserPersona) {
@@ -683,7 +820,6 @@
     onDeleteChat={handleDeleteChat}
     onDeleteCharacter={handleDeleteCharacter}
     onImportChat={handleImportChat}
-    onExportChat={handleExportChat}
     onOpenLorebooks={() => (isLorebookOpen = true)}
     onOpenSync={() => (isSyncOpen = true)}
     onClose={() => (isSidebarOpen = false)}
@@ -696,7 +832,7 @@
       <div class="nav-left">
         <button
           class="icon-nav-btn hamburger-btn"
-          on:click={() => (isSidebarOpen = !isSidebarOpen)}
+          onclick={() => (isSidebarOpen = !isSidebarOpen)}
           title="Toggle sidebar"
         >
           ☰
@@ -705,12 +841,12 @@
         {#if activeGroup}
           <div
             class="active-char-badge"
-            on:click={() => {
+            onclick={() => {
               editingGroup = activeGroup;
               isGroupModalOpen = true;
             }}
-            on:keydown={(e) => {
-              if (e.key === 'Enter') {
+            onkeydown={(e) => {
+              if (e.key === "Enter") {
                 editingGroup = activeGroup;
                 isGroupModalOpen = true;
               }
@@ -725,20 +861,20 @@
                 class="nav-avatar"
               />
             {:else}
-              <div class="nav-avatar-placeholder">
-                👥
-              </div>
+              <div class="nav-avatar-placeholder">👥</div>
             {/if}
             <div class="nav-char-details">
               <span class="nav-char-name">{activeGroup.name}</span>
-              <span class="nav-char-subtitle">Group &bull; {activeGroup.members.length} members</span>
+              <span class="nav-char-subtitle"
+                >Group &bull; {activeGroup.members.length} members</span
+              >
             </div>
           </div>
         {:else if activeCharacter}
           <div
             class="active-char-badge"
-            on:click={handleEditActiveCharacter}
-            on:keydown={(e) => e.key === 'Enter' && handleEditActiveCharacter()}
+            onclick={handleEditActiveCharacter}
+            onkeydown={(e) => e.key === "Enter" && handleEditActiveCharacter()}
             role="button"
             tabindex="0"
           >
@@ -754,7 +890,8 @@
               </div>
             {/if}
             <div class="nav-char-details">
-              <span class="nav-char-name">{activeCharacter.card.data.name}</span>
+              <span class="nav-char-name">{activeCharacter.card.data.name}</span
+              >
               <span class="nav-char-subtitle">Edit card</span>
             </div>
           </div>
@@ -769,25 +906,10 @@
             ⚡ {settings.active_model}
           </div>
         {/if}
-        {#if activeChatId}
-          <button
-            class="icon-nav-btn action-btn-compact export-chat-nav-btn"
-            on:click={() => {
-              if (activeChatId) {
-                const curChat = chats.find((c) => c.id === activeChatId);
-                handleExportChat(activeChatId, curChat?.title);
-              }
-            }}
-            title="Export active chat as SillyTavern JSONL"
-          >
-            <span class="btn-icon">📤</span>
-            <span class="btn-text">Export</span>
-          </button>
-        {/if}
         {#if activeCharacter?.card?.data?.creator_notes}
           <button
             class="icon-nav-btn action-btn-compact notes-nav-btn"
-            on:click={() => (isCreatorNotesOpen = true)}
+            onclick={() => (isCreatorNotesOpen = true)}
             title="Creator Notes"
           >
             <span class="btn-icon">📜</span>
@@ -796,7 +918,7 @@
         {/if}
         <button
           class="icon-nav-btn action-btn-compact lorebook-nav-btn"
-          on:click={() => (isLorebookOpen = true)}
+          onclick={() => (isLorebookOpen = true)}
           title="World Info & Lorebooks"
         >
           <span class="btn-icon">📖</span>
@@ -805,7 +927,7 @@
 
         <button
           class="icon-nav-btn action-btn-compact"
-          on:click={() => (isPersonaOpen = true)}
+          onclick={() => (isPersonaOpen = true)}
           title="User Persona ({userPersona?.name || 'User'})"
         >
           <span class="btn-icon">👤</span>
@@ -814,20 +936,11 @@
 
         <button
           class="icon-nav-btn action-btn-compact"
-          on:click={() => (isSettingsOpen = true)}
+          onclick={() => (isSettingsOpen = true)}
           title="API & Generation Settings"
         >
           <span class="btn-icon">⚙️</span>
           <span class="btn-text">Settings</span>
-        </button>
-
-        <button
-          class="icon-nav-btn action-btn-compact sync-nav-btn"
-          on:click={() => (isSyncOpen = true)}
-          title="Local Device Sync (CRDT)"
-        >
-          <span class="btn-icon">🔄</span>
-          <span class="btn-text">Sync</span>
         </button>
       </div>
     </header>
@@ -858,12 +971,18 @@
         <div class="hero-empty">
           <div class="hero-icon">🏰</div>
           <h2>Welcome to Tavern</h2>
-          <p>Import a character card, create a character, or start a group roleplay.</p>
+          <p>
+            Import a character card, create a character, or start a group
+            roleplay.
+          </p>
           <div class="hero-actions-row">
-            <button class="hero-btn" on:click={handleOpenNewCharacter}>
+            <button class="hero-btn" onclick={handleOpenNewCharacter}>
               + Create Character
             </button>
-            <button class="hero-btn hero-btn-secondary" on:click={handleCreateGroup}>
+            <button
+              class="hero-btn hero-btn-secondary"
+              onclick={handleCreateGroup}
+            >
               👥 Create Group
             </button>
           </div>
@@ -873,10 +992,16 @@
           <div class="hero-icon">💬</div>
           {#if activeGroup}
             <h2>Start group roleplay in {activeGroup.name}</h2>
-            <p>{activeGroup.description || 'Type a message or trigger a character turn above to begin.'}</p>
+            <p>
+              {activeGroup.description ||
+                "Type a message or trigger a character turn above to begin."}
+            </p>
           {:else if activeCharacter}
             <h2>Start a conversation with {activeCharacter.card.data.name}</h2>
-            <p>{activeCharacter.card.data.scenario || 'Type a message below to begin.'}</p>
+            <p>
+              {activeCharacter.card.data.scenario ||
+                "Type a message below to begin."}
+            </p>
           {/if}
         </div>
       {:else}
@@ -886,30 +1011,50 @@
               message={msg}
               {characters}
               isGroupChat={!!activeGroup}
-              characterName={activeCharacter?.card.data.name || 'Character'}
+              characterName={activeCharacter?.card.data.name || "Character"}
               characterAvatar={activeCharacter?.avatar_data_url || null}
-              userName={userPersona?.name || 'You'}
+              userName={userPersona?.name || "You"}
               userAvatar={userPersona?.avatar_data_url || null}
               {isGenerating}
-              isLastMessage={i === messages.length - 1}
-              continuingText={continuingMessageId === msg.id ? streamingText : ''}
+              continuingText={continuingMessageId === msg.id
+                ? streamingText
+                : ""}
               onSwipe={handleSwipe}
-              onRegenerateSwipe={handleRegenerateSwipe}
-              onContinue={handleContinueGeneration}
               onEdit={handleEditMessage}
               onDelete={handleDeleteMessage}
+              onForkChat={handleForkChat}
+              regexRules={settings?.regex_rules || []}
               onOpenImage={handleOpenImagePreview}
-              onSetSpeaker={handleSetMessageSpeaker}
             />
+            {#if i === messages.length - 1 && msg.role !== "User" && !isGenerating}
+              <div>
+                <button
+                  class="action-icon-btn continue-btn"
+                  disabled={isGenerating}
+                  onclick={() => handleContinueGeneration}
+                  title="Continue AI message generation"
+                >
+                  ▶ Continue
+                </button>
+                <button
+                  class="action-icon-btn swipe-new-btn"
+                  disabled={isGenerating}
+                  onclick={handleRegenerateSwipe}
+                  title="Generaate alternate reply"
+                >
+                  🔄 Swipe
+                </button>
+              </div>
+            {/if}
           {/each}
 
           <!-- Live Streaming Token Display -->
           {#if isGenerating && streamingText && !continuingMessageId}
             <ChatMessage
               message={{
-                id: 'temp-streaming',
+                id: "temp-streaming",
                 parent_id: null,
-                role: 'Assistant',
+                role: "Assistant",
                 content: streamingText,
                 created_at: new Date().toISOString(),
                 sibling_index: 0,
@@ -921,16 +1066,19 @@
               }}
               {characters}
               isGroupChat={!!activeGroup}
-              characterName={streamingSpeakerName || activeCharacter?.card.data.name || 'Character'}
-              characterAvatar={streamingSpeakerAvatar || activeCharacter?.avatar_data_url || null}
-              userName={userPersona?.name || 'You'}
+              characterName={streamingSpeakerName ||
+                activeCharacter?.card.data.name ||
+                "Character"}
+              characterAvatar={streamingSpeakerAvatar ||
+                activeCharacter?.avatar_data_url ||
+                null}
+              userName={userPersona?.name || "You"}
               userAvatar={userPersona?.avatar_data_url || null}
               isGenerating={true}
-              isLastMessage={true}
               onSwipe={() => {}}
-              onRegenerateSwipe={() => {}}
               onEdit={() => {}}
               onDelete={() => {}}
+              regexRules={settings?.regex_rules || []}
               onOpenImage={handleOpenImagePreview}
             />
           {/if}
@@ -942,8 +1090,13 @@
               <div class="dot"></div>
               <div class="dot"></div>
               <span>
-                {streamingSpeakerName || (activeGroup && characters.find(c => c.id === nextSpeakerId)?.card.data.name) || activeCharacter?.card.data.name || 'Character'}
-                {continuingMessageId ? 'is continuing...' : 'is typing...'}
+                {streamingSpeakerName ||
+                  (activeGroup &&
+                    characters.find((c) => c.id === nextSpeakerId)?.card.data
+                      .name) ||
+                  activeCharacter?.card.data.name ||
+                  "Character"}
+                {continuingMessageId ? "is continuing..." : "is typing..."}
               </span>
             </div>
           {/if}
@@ -953,17 +1106,21 @@
 
     <!-- Bottom Input Bar -->
     {#if activeCharacter || activeGroup}
+      <ContextBar
+        breakdown={contextBreakdown}
+        chatTree={activeChatTree}
+        onOpenAuthorsNote={() => (isAuthorsNoteModalOpen = true)}
+        onRefresh={() => refreshContextBreakdown(currentDraftText)}
+      />
       <ChatInput
         {isGenerating}
         placeholder={activeGroup
-          ? `Message ${activeGroup.name}... (Next turn: ${characters.find(c => c.id === nextSpeakerId)?.card.data.name || 'Auto'})`
+          ? `Message ${activeGroup.name}... (Next turn: ${characters.find((c) => c.id === nextSpeakerId)?.card.data.name || "Auto"})`
           : `Message ${activeCharacter?.card.data.name}...`}
-        hasMessages={messages.length > 0}
-        lastMessageIsAssistant={messages.length > 0 && messages[messages.length - 1].role === 'Assistant'}
+        bind:text={inputDraftText}
+        onDraftChange={handleDraftChange}
         onSend={handleSendMessage}
         onStop={handleStopGeneration}
-        onRegenerate={handleRegenerateSwipe}
-        onContinue={handleContinueGeneration}
       />
     {/if}
   </div>
@@ -976,9 +1133,15 @@
   onSave={handleSaveSettings}
   onClose={() => (isSettingsOpen = false)}
 />
+<AuthorsNoteModal
+  isOpen={isAuthorsNoteModalOpen}
+  chatTree={activeChatTree}
+  onSave={handleSaveAuthorsNote}
+  onClose={() => (isAuthorsNoteModalOpen = false)}
+/>
 
 <PersonaModal
-  activePersona={userPersona}
+  activePersona={userPersona!}
   isOpen={isPersonaOpen}
   onPersonaChanged={(updated) => {
     userPersona = updated;
@@ -994,8 +1157,8 @@
 />
 
 <CreatorNotesModal
-  characterName={activeCharacter?.card.data.name || 'Character'}
-  creatorNotes={activeCharacter?.card.data.creator_notes || ''}
+  characterName={activeCharacter?.card.data.name || "Character"}
+  creatorNotes={activeCharacter?.card.data.creator_notes || ""}
   characterAvatar={activeCharacter?.avatar_data_url || null}
   isOpen={isCreatorNotesOpen}
   onOpenImagePreview={handleOpenImagePreview}
@@ -1036,7 +1199,8 @@
 <style>
   :global(body) {
     margin: 0;
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      Helvetica, Arial, sans-serif;
     background: #11111b;
     color: #cdd6f4;
     overflow: hidden;
@@ -1225,12 +1389,22 @@
     animation: bounce 1.4s infinite ease-in-out both;
   }
 
-  .dot:nth-child(1) { animation-delay: -0.32s; }
-  .dot:nth-child(2) { animation-delay: -0.16s; }
+  .dot:nth-child(1) {
+    animation-delay: -0.32s;
+  }
+  .dot:nth-child(2) {
+    animation-delay: -0.16s;
+  }
 
   @keyframes bounce {
-    0%, 80%, 100% { transform: scale(0); }
-    40% { transform: scale(1); }
+    0%,
+    80%,
+    100% {
+      transform: scale(0);
+    }
+    40% {
+      transform: scale(1);
+    }
   }
 
   .hero-empty {
@@ -1330,5 +1504,45 @@
     .messages-container {
       gap: 0.75rem;
     }
+  }
+
+  .action-icon-btn {
+    background: rgba(24, 24, 37, 0.6);
+    border: 1px solid #313244;
+    color: #a6adc8;
+    padding: 0.2rem 0.45rem;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .action-icon-btn:hover {
+    background: #313244;
+    color: #cdd6f4;
+  }
+
+  .swipe-new-btn {
+    background: rgba(203, 166, 247, 0.15);
+    border-color: rgba(203, 166, 247, 0.4);
+    color: #cba6f7;
+    font-weight: 600;
+  }
+
+  .swipe-new-btn:hover:not(:disabled) {
+    background: rgba(203, 166, 247, 0.3);
+    color: #f5c2e7;
+  }
+
+  .continue-btn {
+    background: rgba(137, 180, 250, 0.15);
+    border-color: rgba(137, 180, 250, 0.4);
+    color: #89b4fa;
+    font-weight: 600;
+  }
+
+  .continue-btn:hover:not(:disabled) {
+    background: rgba(137, 180, 250, 0.3);
+    color: #b4befe;
   }
 </style>

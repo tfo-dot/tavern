@@ -86,8 +86,13 @@ impl Group {
 /// Resolves which character speaks next in a group based on the turn mode and recent speaker history.
 pub fn resolve_next_speaker(group: &Group, last_speaker_id: Option<&str>) -> Option<String> {
     let enabled = group.enabled_members();
+
     if enabled.is_empty() {
         return None;
+    }
+
+    if enabled.len() == 1 {
+        return Some(enabled[0].character_id.clone());
     }
 
     match group.turn_mode {
@@ -101,28 +106,16 @@ pub fn resolve_next_speaker(group: &Group, last_speaker_id: Option<&str>) -> Opt
             Some(enabled[0].character_id.clone())
         }
         TurnMode::Random => {
-            if enabled.len() == 1 {
-                return Some(enabled[0].character_id.clone());
-            }
+            let mut candidates = enabled;
 
-            let candidates: Vec<&GroupMember> = if !group.allow_self_responses {
-                if let Some(last_id) = last_speaker_id {
-                    let filtered: Vec<&GroupMember> = enabled
-                        .iter()
-                        .copied()
-                        .filter(|m| m.character_id != last_id)
-                        .collect();
-                    if !filtered.is_empty() {
-                        filtered
-                    } else {
-                        enabled
-                    }
-                } else {
-                    enabled
+            if !group.allow_self_responses
+                && let Some(last_id) = last_speaker_id
+            {
+                let has_other_speakers = candidates.iter().any(|m| m.character_id != last_id);
+                if has_other_speakers {
+                    candidates.retain(|m| m.character_id != last_id);
                 }
-            } else {
-                enabled
-            };
+            }
 
             let seed = Utc::now().timestamp_nanos_opt().unwrap_or(0) as usize;
             let idx = seed % candidates.len();
@@ -182,7 +175,6 @@ impl MessageNode {
     }
 }
 
-/// A flattened view node designed for clean rendering and swipe navigation in the UI.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MessageViewNode {
     pub id: Uuid,
@@ -200,6 +192,14 @@ pub struct MessageViewNode {
     pub name: Option<String>,
 }
 
+fn default_authors_note_depth() -> usize {
+    1
+}
+
+fn default_authors_note_interval() -> usize {
+    1
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatTree {
     pub id: Uuid,
@@ -212,6 +212,12 @@ pub struct ChatTree {
     pub active_root_index: usize,
     #[serde(default)]
     pub group_id: Option<String>,
+    #[serde(default)]
+    pub authors_note: String,
+    #[serde(default = "default_authors_note_depth")]
+    pub authors_note_depth: usize,
+    #[serde(default = "default_authors_note_interval")]
+    pub authors_note_interval: usize,
 }
 
 impl Default for ChatTree {
@@ -227,10 +233,12 @@ impl Default for ChatTree {
             nodes: HashMap::new(),
             active_root_index: 0,
             group_id: None,
+            authors_note: String::new(),
+            authors_note_depth: 1,
+            authors_note_interval: 1,
         }
     }
 }
-
 impl ChatTree {
     pub fn new(character_id: String, title: String) -> Self {
         let now = Utc::now();
@@ -244,6 +252,9 @@ impl ChatTree {
             nodes: HashMap::new(),
             active_root_index: 0,
             group_id: None,
+            authors_note: String::new(),
+            authors_note_depth: 1,
+            authors_note_interval: 1,
         }
     }
 
@@ -259,10 +270,12 @@ impl ChatTree {
             nodes: HashMap::new(),
             active_root_index: 0,
             group_id: Some(group_id),
+            authors_note: String::new(),
+            authors_note_depth: 1,
+            authors_note_interval: 1,
         }
     }
-
-    /// Appends a new message as a child of the specified parent, or as a new root.
+    /// Appends a new message as a child of parent, or as a new root.
     pub fn append_message(
         &mut self,
         role: AuthorRole,
@@ -299,12 +312,12 @@ impl ChatTree {
         node_id
     }
 
-    /// Adds an alternate generation (swipe) under the same parent node.
+    /// Adds an alternate generation under the same parent node.
     pub fn add_swipe(&mut self, parent_id: Option<Uuid>, content: String) -> Option<Uuid> {
         self.add_swipe_with_author(parent_id, content, None, None)
     }
 
-    /// Adds an alternate generation (swipe) with explicit author metadata.
+    /// Adds an alternate generation with explicit author metadata.
     pub fn add_swipe_with_author(
         &mut self,
         parent_id: Option<Uuid>,
@@ -313,6 +326,7 @@ impl ChatTree {
         name: Option<String>,
     ) -> Option<Uuid> {
         self.updated_at = Utc::now();
+
         let node = MessageNode::with_author(
             AuthorRole::Assistant,
             content,
@@ -320,6 +334,7 @@ impl ChatTree {
             character_id,
             name,
         );
+
         let node_id = node.id;
 
         if let Some(pid) = parent_id {
@@ -333,23 +348,6 @@ impl ChatTree {
 
         self.nodes.insert(node_id, node);
         Some(node_id)
-    }
-
-    /// Updates the speaker attribution for a message.
-    pub fn set_message_author(
-        &mut self,
-        id: Uuid,
-        character_id: Option<String>,
-        name: Option<String>,
-    ) -> Result<(), String> {
-        self.updated_at = Utc::now();
-        if let Some(node) = self.nodes.get_mut(&id) {
-            node.character_id = character_id;
-            node.name = name;
-            Ok(())
-        } else {
-            Err("Message not found".to_string())
-        }
     }
 
     /// Edits an existing message's text content.
@@ -444,16 +442,21 @@ impl ChatTree {
         let mut current_id = Some(root_id);
 
         while let Some(id) = current_id {
-            if let Some(node) = self.nodes.get(&id) {
-                path.push(node);
-                if node.children_ids.is_empty() {
-                    current_id = None;
-                } else {
-                    let next_idx = node.selected_child_index.min(node.children_ids.len() - 1);
-                    current_id = node.children_ids.get(next_idx).copied();
-                }
-            } else {
+            let node = self.nodes.get(&id);
+
+            if node.is_none() {
                 break;
+            }
+
+            let node = node.unwrap();
+
+            path.push(node);
+
+            if node.children_ids.is_empty() {
+                current_id = None;
+            } else {
+                let next_idx = node.selected_child_index.min(node.children_ids.len() - 1);
+                current_id = node.children_ids.get(next_idx).copied();
             }
         }
 
@@ -507,65 +510,84 @@ impl ChatTree {
     pub fn get_last_node_id(&self) -> Option<Uuid> {
         self.get_active_path().last().map(|n| n.id)
     }
+    /// Forks the chat tree from the root down to the given `message_id`, creating a new independent ChatTree.
+    pub fn fork_at_message(
+        &self,
+        message_id: Uuid,
+        new_title: Option<String>,
+    ) -> Result<ChatTree, String> {
+        if !self.nodes.contains_key(&message_id) {
+            return Err("Target message node not found in chat".to_string());
+        }
+
+        // Trace from message_id backwards to root
+        let mut path_ids = Vec::new();
+        let mut curr = Some(message_id);
+        while let Some(id) = curr {
+            path_ids.push(id);
+            curr = self.nodes.get(&id).and_then(|n| n.parent_id);
+        }
+        path_ids.reverse();
+
+        let title = new_title.unwrap_or_else(|| format!("{} (Fork)", self.title));
+        let mut forked = match &self.group_id {
+            Some(gid) => ChatTree::new_group(gid.clone(), title),
+            None => ChatTree::new(self.character_id.clone(), title),
+        };
+        forked.authors_note = self.authors_note.clone();
+        forked.authors_note_depth = self.authors_note_depth;
+        forked.authors_note_interval = self.authors_note_interval;
+
+        let mut parent_id = None;
+        for id in path_ids {
+            if let Some(orig) = self.nodes.get(&id) {
+                let new_id = forked.append_message_with_author(
+                    orig.role.clone(),
+                    orig.content.clone(),
+                    parent_id,
+                    orig.character_id.clone(),
+                    orig.name.clone(),
+                );
+                parent_id = Some(new_id);
+            }
+        }
+
+        Ok(forked)
+    }
 }
 /// Helper function to parse diverse SillyTavern timestamp formats.
 pub fn parse_sillytavern_date(s: &str) -> Option<DateTime<Utc>> {
     let s = s.trim();
+
     if s.is_empty() {
         return None;
     }
+
     if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
         return Some(dt.with_timezone(&Utc));
     }
+
     if let Ok(ndt) = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S") {
         return Some(DateTime::from_naive_utc_and_offset(ndt, Utc));
     }
+
     if let Ok(ts) = s.parse::<i64>() {
         if ts > 100_000_000_000 {
             return DateTime::from_timestamp_millis(ts);
-        } else {
-            return DateTime::from_timestamp(ts, 0);
         }
+
+        return DateTime::from_timestamp(ts, 0);
     }
-    // Check SillyTavern custom pattern: "YYYY-MM-DD @HHh MMm SSs [XXXms]"
-    if let Some((date_part, time_part)) = s.split_once('@') {
-        let date_part = date_part.trim();
-        let time_part = time_part.trim();
-        let date_tokens: Vec<&str> = date_part.split('-').collect();
-        if date_tokens.len() == 3 {
-            let year: i32 = date_tokens[0].parse().ok()?;
-            let month: u32 = date_tokens[1].parse().ok()?;
-            let day: u32 = date_tokens[2].parse().ok()?;
 
-            let mut hour = 0u32;
-            let mut min = 0u32;
-            let mut sec = 0u32;
-            let mut millis = 0u32;
+    let trimmed = s.trim();
 
-            for chunk in time_part.split_whitespace() {
-                if let Some(h) = chunk.strip_suffix('h').or_else(|| chunk.strip_suffix('H')) {
-                    hour = h.parse().unwrap_or(0);
-                } else if let Some(m) = chunk
-                    .strip_suffix("ms")
-                    .or_else(|| chunk.strip_suffix("MS"))
-                {
-                    millis = m.parse().unwrap_or(0);
-                } else if let Some(m) = chunk.strip_suffix('m').or_else(|| chunk.strip_suffix('M'))
-                {
-                    min = m.parse().unwrap_or(0);
-                } else if let Some(sec_str) =
-                    chunk.strip_suffix('s').or_else(|| chunk.strip_suffix('S'))
-                {
-                    sec = sec_str.parse().unwrap_or(0);
-                }
-            }
+    let parsed = chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d @%Hh %Mm %Ss %3fms")
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d @%Hh %Mm %Ss"));
 
-            let date = chrono::NaiveDate::from_ymd_opt(year, month, day)?;
-            let time = chrono::NaiveTime::from_hms_milli_opt(hour, min, sec, millis)?;
-            let ndt = chrono::NaiveDateTime::new(date, time);
-            return Some(DateTime::from_naive_utc_and_offset(ndt, Utc));
-        }
+    if let Ok(ndt) = parsed {
+        return Some(DateTime::from_naive_utc_and_offset(ndt, Utc));
     }
+
     None
 }
 
@@ -600,74 +622,53 @@ pub struct SillyTavernExportMessage {
     pub character_id: Option<String>,
 }
 
-/// Exports a ChatTree into SillyTavern line-delimited JSON (JSONL) format.
-/// Line 0 contains the chat session metadata header.
-/// Lines 1..N contain the conversation history turns along the active branch with swipe alternatives preserved.
+/// Exports a ChatTree into SillyTavern JSONL format.
+/// First line contains the chat session header, rest is conversation history (with alternatives preserved)
 pub fn export_sillytavern_chat_jsonl(
     chat: &ChatTree,
     user_name: &str,
     character_name: &str,
 ) -> Result<String, String> {
-    let mut lines = Vec::new();
+    let mut out = Vec::with_capacity(4096);
 
-    // 1. Line 0: Header
+    // Header
     let header = SillyTavernChatHeader {
         user_name: user_name.to_string(),
         character_name: character_name.to_string(),
         create_date: format_sillytavern_date(&chat.created_at),
         chat_metadata: serde_json::json!({}),
     };
-    let header_json = serde_json::to_string(&header).map_err(|e| e.to_string())?;
-    lines.push(header_json);
+    serde_json::to_writer(&mut out, &header).map_err(|e| e.to_string())?;
+    out.push(b'\n');
 
-    // 2. Active Path traversal
-    let active_path = chat.get_active_path();
-    for node in active_path {
-        // Collect swipes for this turn
-        let (swipes, swipe_id) = if let Some(pid) = node.parent_id {
-            if let Some(parent) = chat.nodes.get(&pid) {
-                let mut swipe_texts = Vec::new();
-                let mut active_idx = 0;
-                for (idx, &child_id) in parent.children_ids.iter().enumerate() {
-                    if let Some(child_node) = chat.nodes.get(&child_id) {
-                        swipe_texts.push(child_node.content.clone());
-                        if child_id == node.id {
-                            active_idx = idx;
-                        }
-                    }
-                }
-                if swipe_texts.is_empty() {
-                    (vec![node.content.clone()], 0)
-                } else {
-                    (swipe_texts, active_idx)
-                }
-            } else {
-                (vec![node.content.clone()], 0)
-            }
-        } else {
-            // Root level
-            let mut swipe_texts = Vec::new();
-            let mut active_idx = 0;
-            for (idx, &root_id) in chat.root_message_ids.iter().enumerate() {
-                if let Some(root_node) = chat.nodes.get(&root_id) {
-                    swipe_texts.push(root_node.content.clone());
-                    if root_id == node.id {
-                        active_idx = idx;
-                    }
-                }
-            }
-            if swipe_texts.is_empty() {
-                (vec![node.content.clone()], 0)
-            } else {
-                (swipe_texts, active_idx)
-            }
+    for node in chat.get_active_path() {
+        let sibling_ids: &[Uuid] = match node.parent_id {
+            Some(pid) => chat.nodes.get(&pid).map_or(&[], |p| &p.children_ids),
+            None => &chat.root_message_ids,
         };
+
+        let mut swipes = Vec::new();
+        let mut swipe_id = 0;
+
+        for (idx, &sib_id) in sibling_ids.iter().enumerate() {
+            if let Some(sibiling_node) = chat.nodes.get(&sib_id) {
+                swipes.push(sibiling_node.content.clone());
+                if sib_id == node.id {
+                    swipe_id = idx;
+                }
+            }
+        }
+
+        if swipes.is_empty() {
+            swipes.push(node.content.clone());
+            swipe_id = 0;
+        }
 
         let (is_user, is_system, name) = match node.role {
             AuthorRole::User => (true, None, user_name.to_string()),
             AuthorRole::Assistant => {
-                let speaker_name = node.name.as_deref().unwrap_or(character_name);
-                (false, None, speaker_name.to_string())
+                let speaker = node.name.as_deref().unwrap_or(character_name);
+                (false, None, speaker.to_string())
             }
             AuthorRole::System => (false, Some(true), "System".to_string()),
         };
@@ -680,21 +681,43 @@ pub fn export_sillytavern_chat_jsonl(
             send_date: format_sillytavern_date(&node.created_at),
             mes: node.content.clone(),
             extra: serde_json::json!({}),
-            force_avatar: "".to_string(),
+            force_avatar: String::new(),
             swipes,
             swipe_id,
             character_id: node.character_id.clone(),
         };
 
-        let msg_json = serde_json::to_string(&msg_obj).map_err(|e| e.to_string())?;
-        lines.push(msg_json);
+        serde_json::to_writer(&mut out, &msg_obj).map_err(|e| e.to_string())?;
+        out.push(b'\n');
     }
 
-    Ok(lines.join("\n"))
+    String::from_utf8(out).map_err(|e| e.to_string())
+}
+
+#[derive(Deserialize)]
+struct RawHeader {
+    character_name: Option<String>,
+    create_date: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct RawMessage {
+    #[serde(alias = "text", alias = "content")]
+    mes: Option<String>,
+    #[serde(default)]
+    is_user: bool,
+    #[serde(default)]
+    is_system: bool,
+    send_date: Option<String>,
+    #[serde(default)]
+    swipes: Vec<String>,
+    #[serde(default)]
+    swipe_id: usize,
+    name: Option<String>,
+    character_id: Option<String>,
 }
 
 /// Imports a SillyTavern JSONL (or JSON array) chat log into a ChatTree.
-/// Accurately preserves all swipes, active selections, author roles, timestamps, and metadata.
 pub fn import_sillytavern_chat_jsonl(
     input: &str,
     character_id: &str,
@@ -705,65 +728,57 @@ pub fn import_sillytavern_chat_jsonl(
         return Err("Input is empty".to_string());
     }
 
-    // Support both newline-delimited JSON (JSONL) and JSON array of objects
     let json_values: Vec<serde_json::Value> = if trimmed.starts_with('[') {
         serde_json::from_str(trimmed).map_err(|e| format!("Invalid JSON array: {e}"))?
     } else {
-        let mut values = Vec::new();
-        for line in trimmed.lines() {
-            let line_trim = line.trim();
-            if !line_trim.is_empty() {
-                let val: serde_json::Value = serde_json::from_str(line_trim)
-                    .map_err(|e| format!("Invalid JSON line: {e}"))?;
-                values.push(val);
-            }
-        }
-        values
+        trimmed
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(serde_json::from_str)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("Invalid JSON line: {e}"))?
     };
 
-    if json_values.is_empty() {
-        return Err("No JSON records found in input".to_string());
-    }
+    let first_val = json_values
+        .first()
+        .ok_or("No JSON records found in input")?;
 
-    let first_val = &json_values[0];
-    let is_header = {
-        let has_header_keys = first_val.get("user_name").is_some()
-            || first_val.get("character_name").is_some()
-            || first_val.get("chat_metadata").is_some();
-        let has_no_msg_fields = first_val.get("is_user").is_none()
-            && first_val.get("is_system").is_none()
-            && (first_val.get("mes").is_none()
-                || first_val
-                    .get("mes")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .is_empty());
-        has_header_keys && has_no_msg_fields
-    };
+    let is_header = (first_val.get("user_name").is_some()
+        || first_val.get("character_name").is_some()
+        || first_val.get("chat_metadata").is_some())
+        && first_val.get("is_user").is_none()
+        && first_val.get("is_system").is_none()
+        && first_val
+            .get("mes")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .is_empty();
 
     let (header_char_name, header_create_date, start_index) = if is_header {
-        let char_name = first_val
-            .get("character_name")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Character");
-        let create_date = first_val
-            .get("create_date")
-            .and_then(|v| v.as_str())
+        let header: RawHeader = serde_json::from_value(first_val.clone()).unwrap_or(RawHeader {
+            character_name: None,
+            create_date: None,
+        });
+        let date = header
+            .create_date
+            .as_deref()
             .and_then(parse_sillytavern_date)
             .unwrap_or_else(Utc::now);
-        (char_name.to_string(), create_date, 1)
+        (
+            header
+                .character_name
+                .unwrap_or_else(|| "Character".to_string()),
+            date,
+            1,
+        )
     } else {
         ("Character".to_string(), Utc::now(), 0)
     };
 
-    let chat_title = if let Some(t) = title {
-        if !t.trim().is_empty() {
-            t.trim().to_string()
-        } else {
-            format!("Chat with {header_char_name}")
-        }
-    } else {
-        format!("Chat with {header_char_name}")
+    let chat_title = match title.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(t) => t.to_string(),
+        None => format!("Chat with {header_char_name}"),
     };
 
     let mut tree = ChatTree::new(character_id.to_string(), chat_title);
@@ -772,118 +787,69 @@ pub fn import_sillytavern_chat_jsonl(
 
     let mut current_parent_id: Option<Uuid> = None;
 
-    for val in json_values.iter().skip(start_index) {
-        let mes = val
-            .get("mes")
-            .or_else(|| val.get("text"))
-            .or_else(|| val.get("content"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+    for val in &json_values[start_index..] {
+        let msg: RawMessage = serde_json::from_value(val.clone())
+            .map_err(|e| format!("Invalid message record: {e}"))?;
 
-        let is_user = val
-            .get("is_user")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let is_system = val
-            .get("is_system")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        let send_date = val
-            .get("send_date")
-            .and_then(|v| v.as_str())
+        let mes = msg.mes.unwrap_or_default();
+        let send_date = msg
+            .send_date
+            .as_deref()
             .and_then(parse_sillytavern_date)
             .unwrap_or_else(Utc::now);
 
-        let swipes_list: Vec<String> =
-            if let Some(arr) = val.get("swipes").and_then(|v| v.as_array()) {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-
-        let mut final_swipes = if swipes_list.is_empty() {
-            vec![mes.to_string()]
+        let mut final_swipes = if msg.swipes.is_empty() {
+            vec![mes.clone()]
         } else {
-            swipes_list
+            msg.swipes
         };
 
-        // Ensure that if mes is not empty and somehow not in swipes, it is included
-        if !mes.is_empty() && !final_swipes.iter().any(|s| s == mes) {
-            final_swipes.insert(0, mes.to_string());
+        let mut active_swipe_idx = msg.swipe_id;
+
+        if !mes.is_empty() && !final_swipes.iter().any(|s| s == &mes) {
+            final_swipes.push(mes);
         }
+        active_swipe_idx = active_swipe_idx.min(final_swipes.len().saturating_sub(1));
 
-        let swipe_id = val
-            .get("swipe_id")
-            .and_then(|v| v.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(0);
-        let active_swipe_idx = swipe_id.min(final_swipes.len().saturating_sub(1));
-
-        let role = if is_system {
+        let role = if msg.is_system {
             AuthorRole::System
-        } else if is_user {
+        } else if msg.is_user {
             AuthorRole::User
         } else {
             AuthorRole::Assistant
         };
 
-        let custom_name = val
-            .get("name")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        let custom_char_id = val
-            .get("character_id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        if current_parent_id.is_none() {
-            // Root level
-            let mut turn_node_ids = Vec::new();
-            for swipe_content in &final_swipes {
+        let turn_node_ids: Vec<Uuid> = final_swipes
+            .into_iter()
+            .map(|content| {
                 let mut node = MessageNode::with_author(
                     role.clone(),
-                    swipe_content.clone(),
-                    None,
-                    custom_char_id.clone(),
-                    custom_name.clone(),
+                    content,
+                    current_parent_id,
+                    msg.character_id.clone(),
+                    msg.name.clone(),
                 );
                 node.created_at = send_date;
-                let node_id = node.id;
-                tree.nodes.insert(node_id, node);
-                tree.root_message_ids.push(node_id);
-                turn_node_ids.push(node_id);
-            }
-            tree.active_root_index = active_swipe_idx;
-            current_parent_id = turn_node_ids.get(active_swipe_idx).copied();
-        } else {
-            let parent_id = current_parent_id.unwrap();
-            let mut turn_node_ids = Vec::new();
-            for swipe_content in &final_swipes {
-                let mut node = MessageNode::with_author(
-                    role.clone(),
-                    swipe_content.clone(),
-                    Some(parent_id),
-                    custom_char_id.clone(),
-                    custom_name.clone(),
-                );
-                node.created_at = send_date;
-                let node_id = node.id;
-                tree.nodes.insert(node_id, node);
-                turn_node_ids.push(node_id);
-            }
+                let id = node.id;
+                tree.nodes.insert(id, node);
+                id
+            })
+            .collect();
 
-            if let Some(parent) = tree.nodes.get_mut(&parent_id) {
-                for &nid in &turn_node_ids {
-                    parent.children_ids.push(nid);
+        match current_parent_id {
+            None => {
+                tree.root_message_ids.extend(&turn_node_ids);
+                tree.active_root_index = active_swipe_idx;
+            }
+            Some(parent_id) => {
+                if let Some(parent) = tree.nodes.get_mut(&parent_id) {
+                    parent.children_ids.extend(&turn_node_ids);
+                    parent.selected_child_index = active_swipe_idx;
                 }
-                parent.selected_child_index = active_swipe_idx;
             }
-
-            current_parent_id = turn_node_ids.get(active_swipe_idx).copied();
         }
+
+        current_parent_id = turn_node_ids.get(active_swipe_idx).copied();
         tree.updated_at = send_date;
     }
 

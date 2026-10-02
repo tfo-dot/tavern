@@ -3,11 +3,46 @@ use crate::chat::{AuthorRole, ChatTree};
 use crate::lorebook::{ActivatedEntry, Lorebook, LorebookPosition, scan_lorebooks_for_activation};
 use crate::template::interpolate_macros;
 use serde::{Deserialize, Serialize};
+use std::sync::LazyLock;
+use tiktoken_rs::CoreBPE;
+
+static BPE: LazyLock<Option<CoreBPE>> = LazyLock::new(|| tiktoken_rs::cl100k_base().ok());
+
+/// Exact token counting using BPE tokenizer (tiktoken-rs cl100k_base),
+/// falling back to character estimation if tokenizer initialization fails.
+pub fn count_tokens(text: &str) -> usize {
+    if text.is_empty() {
+        return 0;
+    }
+    if let Some(bpe) = BPE.as_ref() {
+        bpe.encode_ordinary(text).len()
+    } else {
+        estimate_tokens(text)
+    }
+}
+
+/// Fallback rough token estimation (~3.5 characters per token)
+pub fn estimate_tokens(text: &str) -> usize {
+    let char_count = text.chars().count();
+    (char_count + 3).div_ceil(4)
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChatMessage {
     pub role: String, // "system", "user", "assistant"
     pub content: String,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_rag_top_k() -> usize {
+    3
+}
+
+fn default_rag_threshold() -> f32 {
+    0.25
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,6 +51,18 @@ pub struct PromptConfig {
     pub max_context_tokens: usize,
     pub max_response_tokens: usize,
     pub include_examples: bool,
+    #[serde(default)]
+    pub authors_note: Option<String>,
+    #[serde(default)]
+    pub authors_note_depth: Option<usize>,
+    #[serde(default)]
+    pub authors_note_interval: Option<usize>,
+    #[serde(default = "default_true")]
+    pub vector_memory_enabled: bool,
+    #[serde(default = "default_rag_top_k")]
+    pub vector_memory_top_k: usize,
+    #[serde(default = "default_rag_threshold")]
+    pub vector_memory_threshold: f32,
 }
 
 impl Default for PromptConfig {
@@ -25,15 +72,14 @@ impl Default for PromptConfig {
             max_context_tokens: 4096,
             max_response_tokens: 800,
             include_examples: true,
+            authors_note: None,
+            authors_note_depth: None,
+            authors_note_interval: None,
+            vector_memory_enabled: true,
+            vector_memory_top_k: 3,
+            vector_memory_threshold: 0.25,
         }
     }
-}
-
-//TODO swap to actual token counting not estimation
-/// Rough token estimation (~3.5 characters per token)
-pub fn estimate_tokens(text: &str) -> usize {
-    let char_count = text.chars().count();
-    (char_count + 3).div_ceil(4)
 }
 
 /// Assembles OpenAI-compatible messages for the chat completion endpoint (without lorebooks)
@@ -262,7 +308,7 @@ pub fn build_chat_prompt_with_lorebooks(
     // 7. Active Chat History
     let mut history_messages = Vec::new();
 
-    for node in active_path {
+    for node in &active_path {
         let role = match node.role {
             AuthorRole::User => "user".to_string(),
             AuthorRole::Assistant => "assistant".to_string(),
@@ -310,8 +356,62 @@ pub fn build_chat_prompt_with_lorebooks(
             );
         }
     }
+    // 8. Author's Note (A/N) Injection
+    let an_text_opt = if !chat_tree.authors_note.trim().is_empty() {
+        Some(chat_tree.authors_note.as_str())
+    } else {
+        config
+            .authors_note
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+    };
 
-    // 8. Post-history instructions if present
+    if let Some(an_raw) = an_text_opt {
+        let an_depth = if !chat_tree.authors_note.trim().is_empty() {
+            chat_tree.authors_note_depth
+        } else {
+            config
+                .authors_note_depth
+                .unwrap_or(chat_tree.authors_note_depth)
+        };
+        let an_interval = if !chat_tree.authors_note.trim().is_empty() {
+            chat_tree.authors_note_interval
+        } else {
+            config
+                .authors_note_interval
+                .unwrap_or(chat_tree.authors_note_interval)
+        };
+
+        let total_active_messages = active_path.len();
+        if an_interval <= 1 || total_active_messages.is_multiple_of(an_interval) {
+            let an_interpolated = interpolate_macros(
+                an_raw,
+                char_name,
+                user_name,
+                &char_data.description,
+                &char_data.personality,
+                &char_data.scenario,
+                &user.description,
+            );
+            if !an_interpolated.trim().is_empty() {
+                let an_formatted = if an_interpolated.trim().starts_with('[') {
+                    an_interpolated
+                } else {
+                    format!("[Author's note: {an_interpolated}]")
+                };
+                let insert_idx = history_messages.len().saturating_sub(an_depth);
+                history_messages.insert(
+                    insert_idx,
+                    ChatMessage {
+                        role: "system".to_string(),
+                        content: an_formatted,
+                    },
+                );
+            }
+        }
+    }
+
+    // 9. Post-history instructions if present
     if !char_data.post_history_instructions.is_empty() {
         let post_hist = interpolate_macros(
             &char_data.post_history_instructions,
@@ -336,25 +436,70 @@ pub fn build_chat_prompt_with_lorebooks(
         }
     }
 
-    // Apply token budgeting on history messages (preserve system messages, trim oldest history if needed)
+    // Apply exact token budgeting on history messages (preserve system messages, trim oldest history if needed)
     let available_tokens = config
         .max_context_tokens
         .saturating_sub(config.max_response_tokens);
-    let mut current_tokens: usize = messages.iter().map(|m| estimate_tokens(&m.content)).sum();
+    let mut current_tokens: usize = messages.iter().map(|m| count_tokens(&m.content)).sum();
 
     let mut included_history = Vec::new();
+    let mut excluded_history = Vec::new();
     for msg in history_messages.into_iter().rev() {
-        let msg_tokens = estimate_tokens(&msg.content);
+        let msg_tokens = count_tokens(&msg.content);
         if current_tokens + msg_tokens <= available_tokens || included_history.is_empty() {
             current_tokens += msg_tokens;
             included_history.push(msg);
         } else {
-            break;
+            excluded_history.push(msg);
         }
     }
+
+    // RAG Smart Context: Retrieve relevant memories from excluded history
+    if config.vector_memory_enabled && !excluded_history.is_empty() {
+        let query = included_history
+            .last()
+            .map(|m| m.content.as_str())
+            .unwrap_or("");
+        let candidates: Vec<crate::rag::MemoryChunk> = excluded_history
+            .iter()
+            .enumerate()
+            .map(|(i, m)| crate::rag::MemoryChunk {
+                message_id: uuid::Uuid::new_v4(),
+                role: m.role.clone(),
+                author: if m.role == "user" {
+                    user_name.to_string()
+                } else {
+                    char_name.to_string()
+                },
+                content: m.content.clone(),
+                turn_index: i,
+            })
+            .collect();
+        let memories = crate::rag::retrieve_relevant_memories(
+            query,
+            &candidates,
+            config.vector_memory_top_k,
+            config.vector_memory_threshold,
+        );
+        if !memories.is_empty() {
+            let formatted_memories = crate::rag::format_retrieved_memories(&memories);
+            if !messages.is_empty() && messages[0].role == "system" {
+                messages[0].content.push_str("\n\n");
+                messages[0].content.push_str(&formatted_memories);
+            } else {
+                messages.insert(
+                    0,
+                    ChatMessage {
+                        role: "system".to_string(),
+                        content: formatted_memories,
+                    },
+                );
+            }
+        }
+    }
+
     included_history.reverse();
     messages.extend(included_history);
-
     messages
 }
 
@@ -620,7 +765,7 @@ pub fn build_group_chat_prompt_with_lorebooks(
     // 8. Active Chat History formatted for multi-character context
     let mut history_messages = Vec::new();
 
-    for node in active_path {
+    for node in &active_path {
         let raw_content = interpolate_macros(
             &node.content,
             target_name,
@@ -728,7 +873,62 @@ pub fn build_group_chat_prompt_with_lorebooks(
         }
     }
 
-    // 9. Post-history instructions if present
+    // 9. Author's Note (A/N) Injection
+    let an_text_opt = if !chat_tree.authors_note.trim().is_empty() {
+        Some(chat_tree.authors_note.as_str())
+    } else {
+        config
+            .authors_note
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+    };
+
+    if let Some(an_raw) = an_text_opt {
+        let an_depth = if !chat_tree.authors_note.trim().is_empty() {
+            chat_tree.authors_note_depth
+        } else {
+            config
+                .authors_note_depth
+                .unwrap_or(chat_tree.authors_note_depth)
+        };
+        let an_interval = if !chat_tree.authors_note.trim().is_empty() {
+            chat_tree.authors_note_interval
+        } else {
+            config
+                .authors_note_interval
+                .unwrap_or(chat_tree.authors_note_interval)
+        };
+
+        let total_active_messages = active_path.len();
+        if an_interval <= 1 || total_active_messages.is_multiple_of(an_interval) {
+            let an_interpolated = interpolate_macros(
+                an_raw,
+                target_name,
+                user_name,
+                &target_char.description,
+                &target_char.personality,
+                &target_char.scenario,
+                &user.description,
+            );
+            if !an_interpolated.trim().is_empty() {
+                let an_formatted = if an_interpolated.trim().starts_with('[') {
+                    an_interpolated
+                } else {
+                    format!("[Author's note: {an_interpolated}]")
+                };
+                let insert_idx = history_messages.len().saturating_sub(an_depth);
+                history_messages.insert(
+                    insert_idx,
+                    ChatMessage {
+                        role: "system".to_string(),
+                        content: an_formatted,
+                    },
+                );
+            }
+        }
+    }
+
+    // 10. Post-history instructions if present
     if !target_char.post_history_instructions.is_empty() {
         let post_hist = interpolate_macros(
             &target_char.post_history_instructions,
@@ -751,24 +951,429 @@ pub fn build_group_chat_prompt_with_lorebooks(
         }
     }
 
-    // Apply token budgeting on history messages
+    // Apply exact token budgeting on history messages
     let available_tokens = config
         .max_context_tokens
         .saturating_sub(config.max_response_tokens);
-    let mut current_tokens: usize = messages.iter().map(|m| estimate_tokens(&m.content)).sum();
+    let mut current_tokens: usize = messages.iter().map(|m| count_tokens(&m.content)).sum();
 
     let mut included_history = Vec::new();
+    let mut excluded_history = Vec::new();
     for msg in history_messages.into_iter().rev() {
-        let msg_tokens = estimate_tokens(&msg.content);
+        let msg_tokens = count_tokens(&msg.content);
         if current_tokens + msg_tokens <= available_tokens || included_history.is_empty() {
             current_tokens += msg_tokens;
             included_history.push(msg);
         } else {
-            break;
+            excluded_history.push(msg);
         }
     }
+
+    // RAG Smart Context: Retrieve relevant memories from excluded history
+    if config.vector_memory_enabled && !excluded_history.is_empty() {
+        let query = included_history
+            .last()
+            .map(|m| m.content.as_str())
+            .unwrap_or("");
+        let candidates: Vec<crate::rag::MemoryChunk> = excluded_history
+            .iter()
+            .enumerate()
+            .map(|(i, m)| crate::rag::MemoryChunk {
+                message_id: uuid::Uuid::new_v4(),
+                role: m.role.clone(),
+                author: if m.role == "user" {
+                    user_name.to_string()
+                } else {
+                    target_name.to_string()
+                },
+                content: m.content.clone(),
+                turn_index: i,
+            })
+            .collect();
+        let memories = crate::rag::retrieve_relevant_memories(
+            query,
+            &candidates,
+            config.vector_memory_top_k,
+            config.vector_memory_threshold,
+        );
+        if !memories.is_empty() {
+            let formatted_memories = crate::rag::format_retrieved_memories(&memories);
+            if !messages.is_empty() && messages[0].role == "system" {
+                messages[0].content.push_str("\n\n");
+                messages[0].content.push_str(&formatted_memories);
+            } else {
+                messages.insert(
+                    0,
+                    ChatMessage {
+                        role: "system".to_string(),
+                        content: formatted_memories,
+                    },
+                );
+            }
+        }
+    }
+
     included_history.reverse();
     messages.extend(included_history);
-
     messages
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ContextBreakdown {
+    pub total_tokens: usize,
+    pub max_context_tokens: usize,
+    pub system_tokens: usize,
+    pub character_tokens: usize,
+    pub user_persona_tokens: usize,
+    pub lorebook_tokens: usize,
+    pub authors_note_tokens: usize,
+    pub history_tokens: usize,
+    pub examples_tokens: usize,
+    pub draft_tokens: usize,
+    pub response_tokens: usize,
+    pub free_tokens: usize,
+    pub percentage: f32,
+}
+
+/// Calculates an exact breakdown of tokens consumed by each section of the prompt.
+pub fn calculate_context_breakdown(
+    char_data: &CharacterData,
+    user: &UserPersona,
+    chat_tree: &ChatTree,
+    config: &PromptConfig,
+    lorebooks: &[&Lorebook],
+    draft_input: Option<&str>,
+) -> ContextBreakdown {
+    let char_name = if char_data.name.is_empty() {
+        "Character"
+    } else {
+        &char_data.name
+    };
+    let user_name = if user.name.is_empty() {
+        "User"
+    } else {
+        &user.name
+    };
+
+    // 1. System Prompt Tokens
+    let mut system_text = String::new();
+    if !config.system_template.is_empty() {
+        system_text.push_str(&interpolate_macros(
+            &config.system_template,
+            char_name,
+            user_name,
+            &char_data.description,
+            &char_data.personality,
+            &char_data.scenario,
+            &user.description,
+        ));
+        system_text.push_str("\n\n");
+    }
+    if !char_data.system_prompt.is_empty() {
+        system_text.push_str(&interpolate_macros(
+            &char_data.system_prompt,
+            char_name,
+            user_name,
+            &char_data.description,
+            &char_data.personality,
+            &char_data.scenario,
+            &user.description,
+        ));
+        system_text.push_str("\n\n");
+    }
+    let system_tokens = count_tokens(&system_text);
+
+    // 2. Character Data Tokens
+    let mut char_text = String::new();
+    if !char_data.description.is_empty() {
+        char_text.push_str(&char_data.description);
+        char_text.push_str("\n\n");
+    }
+    if !char_data.personality.is_empty() {
+        char_text.push_str(&char_data.personality);
+        char_text.push_str("\n\n");
+    }
+    if !char_data.scenario.is_empty() {
+        char_text.push_str(&char_data.scenario);
+        char_text.push_str("\n\n");
+    }
+    if !char_data.post_history_instructions.is_empty() {
+        char_text.push_str(&char_data.post_history_instructions);
+        char_text.push_str("\n\n");
+    }
+    let character_tokens = count_tokens(&char_text);
+
+    // 3. User Persona Tokens
+    let user_persona_tokens = if !user.description.is_empty() {
+        count_tokens(&user.description)
+    } else {
+        0
+    };
+
+    // 4. Examples Tokens
+    let examples_tokens = if config.include_examples && !char_data.mes_example.is_empty() {
+        count_tokens(&char_data.mes_example)
+    } else {
+        0
+    };
+
+    // 5. Lorebook Tokens
+    let active_path = chat_tree.get_active_path();
+    let chat_texts: Vec<String> = active_path.iter().map(|n| n.content.clone()).collect();
+    let activated_entries =
+        scan_lorebooks_for_activation(lorebooks, &chat_texts, draft_input.unwrap_or(""));
+    let mut lorebook_text = String::new();
+    for entry in &activated_entries {
+        lorebook_text.push_str(&entry.content);
+        lorebook_text.push_str("\n\n");
+    }
+    let lorebook_tokens = count_tokens(&lorebook_text);
+
+    // 6. Author's Note Tokens
+    let an_text_opt = if !chat_tree.authors_note.trim().is_empty() {
+        Some(chat_tree.authors_note.as_str())
+    } else {
+        config
+            .authors_note
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+    };
+    let authors_note_tokens = if let Some(an) = an_text_opt {
+        let an_interval = if !chat_tree.authors_note.trim().is_empty() {
+            chat_tree.authors_note_interval
+        } else {
+            config
+                .authors_note_interval
+                .unwrap_or(chat_tree.authors_note_interval)
+        };
+        if an_interval <= 1 || active_path.len().is_multiple_of(an_interval) {
+            count_tokens(an)
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    // 7. Draft Input Tokens
+    let draft_tokens = draft_input.map(count_tokens).unwrap_or(0);
+
+    // 8. History Tokens (budgeted against max_context_tokens - max_response_tokens)
+    let prompt_messages =
+        build_chat_prompt_with_lorebooks(char_data, user, chat_tree, config, lorebooks);
+    // The history messages are all prompt_messages minus the leading system/example messages
+    let non_history_tokens = system_tokens
+        + character_tokens
+        + user_persona_tokens
+        + lorebook_tokens
+        + examples_tokens
+        + authors_note_tokens;
+    let prompt_total: usize = prompt_messages
+        .iter()
+        .map(|m| count_tokens(&m.content))
+        .sum();
+    let history_tokens = prompt_total.saturating_sub(non_history_tokens);
+
+    let response_tokens = config.max_response_tokens;
+    let total_tokens = system_tokens
+        + character_tokens
+        + user_persona_tokens
+        + lorebook_tokens
+        + authors_note_tokens
+        + examples_tokens
+        + history_tokens
+        + draft_tokens;
+
+    let free_tokens = config
+        .max_context_tokens
+        .saturating_sub(total_tokens + response_tokens);
+    let percentage = if config.max_context_tokens > 0 {
+        ((total_tokens as f32 / config.max_context_tokens as f32) * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+
+    ContextBreakdown {
+        total_tokens,
+        max_context_tokens: config.max_context_tokens,
+        system_tokens,
+        character_tokens,
+        user_persona_tokens,
+        lorebook_tokens,
+        authors_note_tokens,
+        history_tokens,
+        examples_tokens,
+        draft_tokens,
+        response_tokens,
+        free_tokens,
+        percentage,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+/// Calculates an exact breakdown of tokens for a group chat turn.
+pub fn calculate_group_context_breakdown(
+    target_char: &CharacterData,
+    target_char_id: &str,
+    other_chars: &[(&CharacterData, &str)],
+    user: &UserPersona,
+    chat_tree: &ChatTree,
+    config: &PromptConfig,
+    lorebooks: &[&Lorebook],
+    draft_input: Option<&str>,
+) -> ContextBreakdown {
+    let target_name = if target_char.name.is_empty() {
+        "Character"
+    } else {
+        &target_char.name
+    };
+    let user_name = if user.name.is_empty() {
+        "User"
+    } else {
+        &user.name
+    };
+
+    // System + Group Intro
+    let mut system_text = String::new();
+    system_text.push_str(&format!(
+        "[Group Roleplay Context]\nThis is a multi-character roleplay group conversation with {user_name} and multiple characters.\nYou are currently roleplaying ONLY as {target_name}.\n"
+    ));
+    if !config.system_template.is_empty() {
+        system_text.push_str(&interpolate_macros(
+            &config.system_template,
+            target_name,
+            user_name,
+            &target_char.description,
+            &target_char.personality,
+            &target_char.scenario,
+            &user.description,
+        ));
+        system_text.push_str("\n\n");
+    }
+    let system_tokens = count_tokens(&system_text);
+
+    // Character Data Tokens (target + other characters brief info)
+    let mut char_text = String::new();
+    if !target_char.description.is_empty() {
+        char_text.push_str(&target_char.description);
+        char_text.push_str("\n\n");
+    }
+    if !target_char.personality.is_empty() {
+        char_text.push_str(&target_char.personality);
+        char_text.push_str("\n\n");
+    }
+    if !target_char.scenario.is_empty() {
+        char_text.push_str(&target_char.scenario);
+        char_text.push_str("\n\n");
+    }
+    for (other, _) in other_chars {
+        char_text.push_str(&format!("{}: {}\n", other.name, other.description));
+    }
+    let character_tokens = count_tokens(&char_text);
+
+    let user_persona_tokens = if !user.description.is_empty() {
+        count_tokens(&user.description)
+    } else {
+        0
+    };
+
+    let examples_tokens = if config.include_examples && !target_char.mes_example.is_empty() {
+        count_tokens(&target_char.mes_example)
+    } else {
+        0
+    };
+
+    let active_path = chat_tree.get_active_path();
+    let chat_texts: Vec<String> = active_path.iter().map(|n| n.content.clone()).collect();
+    let activated_entries =
+        scan_lorebooks_for_activation(lorebooks, &chat_texts, draft_input.unwrap_or(""));
+    let mut lorebook_text = String::new();
+    for entry in &activated_entries {
+        lorebook_text.push_str(&entry.content);
+        lorebook_text.push_str("\n\n");
+    }
+    let lorebook_tokens = count_tokens(&lorebook_text);
+
+    let an_text_opt = if !chat_tree.authors_note.trim().is_empty() {
+        Some(chat_tree.authors_note.as_str())
+    } else {
+        config
+            .authors_note
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+    };
+    let authors_note_tokens = if let Some(an) = an_text_opt {
+        let an_interval = if !chat_tree.authors_note.trim().is_empty() {
+            chat_tree.authors_note_interval
+        } else {
+            config
+                .authors_note_interval
+                .unwrap_or(chat_tree.authors_note_interval)
+        };
+        if an_interval <= 1 || active_path.len().is_multiple_of(an_interval) {
+            count_tokens(an)
+        } else {
+            0
+        }
+    } else {
+        0
+    };
+
+    let draft_tokens = draft_input.map(count_tokens).unwrap_or(0);
+
+    let prompt_messages = build_group_chat_prompt_with_lorebooks(
+        target_char,
+        target_char_id,
+        other_chars,
+        user,
+        chat_tree,
+        config,
+        lorebooks,
+    );
+    let non_history_tokens = system_tokens
+        + character_tokens
+        + user_persona_tokens
+        + lorebook_tokens
+        + examples_tokens
+        + authors_note_tokens;
+    let prompt_total: usize = prompt_messages
+        .iter()
+        .map(|m| count_tokens(&m.content))
+        .sum();
+    let history_tokens = prompt_total.saturating_sub(non_history_tokens);
+
+    let response_tokens = config.max_response_tokens;
+    let total_tokens = system_tokens
+        + character_tokens
+        + user_persona_tokens
+        + lorebook_tokens
+        + authors_note_tokens
+        + examples_tokens
+        + history_tokens
+        + draft_tokens;
+
+    let free_tokens = config
+        .max_context_tokens
+        .saturating_sub(total_tokens + response_tokens);
+    let percentage = if config.max_context_tokens > 0 {
+        ((total_tokens as f32 / config.max_context_tokens as f32) * 100.0).clamp(0.0, 100.0)
+    } else {
+        0.0
+    };
+
+    ContextBreakdown {
+        total_tokens,
+        max_context_tokens: config.max_context_tokens,
+        system_tokens,
+        character_tokens,
+        user_persona_tokens,
+        lorebook_tokens,
+        authors_note_tokens,
+        history_tokens,
+        examples_tokens,
+        draft_tokens,
+        response_tokens,
+        free_tokens,
+        percentage,
+    }
 }

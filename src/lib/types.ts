@@ -27,6 +27,8 @@ export interface Character {
   id: string;
   card: CharacterCardV2;
   avatar_data_url: string | null;
+  folder?: string | null;
+  sprites?: Record<string, string>;
   created_at: string;
   updated_at: string;
 }
@@ -78,6 +80,9 @@ export interface ChatTree {
   nodes: Record<string, unknown>;
   active_root_index: number;
   group_id?: string | null;
+  authors_note?: string;
+  authors_note_depth?: number;
+  authors_note_interval?: number;
 }
 
 export interface ChatSummary {
@@ -109,6 +114,43 @@ export interface AppSettings {
   device_name?: string;
   sync_port?: number;
   sync_pin?: string;
+  min_p?: number;
+  top_k?: number;
+  repetition_penalty?: number;
+  api_type?: 'openai' | 'anthropic' | 'koboldcpp' | string | null;
+  authors_note?: string;
+  authors_note_depth?: number;
+  authors_note_interval?: number;
+  regex_rules?: RegexRule[];
+  vector_memory_enabled?: boolean;
+  vector_memory_top_k?: number;
+  vector_memory_threshold?: number;
+}
+export interface RegexRule {
+  id: string;
+  name: string;
+  pattern: string;
+  replacement: string;
+  enabled: boolean;
+  case_insensitive: boolean;
+  run_on_output: boolean;
+  run_on_input: boolean;
+  run_on_display: boolean;
+}
+export interface ContextBreakdown {
+  total_tokens: number;
+  max_context_tokens: number;
+  system_tokens: number;
+  character_tokens: number;
+  user_persona_tokens: number;
+  lorebook_tokens: number;
+  authors_note_tokens: number;
+  history_tokens: number;
+  examples_tokens: number;
+  draft_tokens: number;
+  response_tokens: number;
+  free_tokens: number;
+  percentage: number;
 }
 
 export interface SyncDeviceInfo {

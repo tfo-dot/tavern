@@ -33,13 +33,37 @@
   let fileInputEl: HTMLInputElement;
   let chatFileInputEl: HTMLInputElement;
 
+  let selectedFolder: string = 'all';
+  let selectedTag: string | null = null;
+  let isUrlImportOpen = false;
+  let urlToImport = '';
+  let isImportingUrl = false;
+  let urlImportError = '';
+
+  $: availableFolders = Array.from(new Set(characters.map((c) => c.folder).filter(Boolean))) as string[];
+  $: availableTags = Array.from(new Set(characters.flatMap((c) => c.card.data.tags || []))).filter(Boolean).sort();
+
   $: filteredCharacters = characters.filter((c) => {
+    if (selectedFolder !== 'all') {
+      if (selectedFolder === 'uncategorized') {
+        if (c.folder) return false;
+      } else if (c.folder !== selectedFolder) {
+        return false;
+      }
+    }
+
+    if (selectedTag && !c.card.data.tags?.includes(selectedTag)) {
+      return false;
+    }
+
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     const nameMatch = c.card.data.name.toLowerCase().includes(q);
     const descMatch = c.card.data.description.toLowerCase().includes(q);
+    const persMatch = c.card.data.personality?.toLowerCase().includes(q);
     const tagMatch = c.card.data.tags?.some((t) => t.toLowerCase().includes(q));
-    return nameMatch || descMatch || tagMatch;
+    const folderMatch = c.folder?.toLowerCase().includes(q);
+    return nameMatch || descMatch || persMatch || tagMatch || folderMatch;
   });
 
   $: filteredGroups = groups.filter((g) => {
@@ -161,12 +185,67 @@
   {#if activeTab === 'characters'}
     <div class="characters-tab">
       <div class="search-and-actions">
-        <input
-          type="text"
-          placeholder="Search characters or tags..."
-          bind:value={searchQuery}
-          class="search-input"
-        />
+        <div class="search-input-wrapper">
+          <span class="search-icon">🔍</span>
+          <input
+            type="text"
+            placeholder="Search name, lore, tags, folders..."
+            bind:value={searchQuery}
+            class="search-input"
+          />
+          {#if searchQuery}
+            <button class="clear-search-btn" on:click={() => (searchQuery = '')} title="Clear search">✕</button>
+          {/if}
+        </div>
+
+        <!-- Tag Filtering Chips -->
+        {#if availableTags.length > 0}
+          <div class="tag-chips-row">
+            <button
+              class="tag-chip {selectedTag === null ? 'active' : ''}"
+              on:click={() => (selectedTag = null)}
+            >
+              All Tags
+            </button>
+            {#each availableTags as tag (tag)}
+              <button
+                class="tag-chip {selectedTag === tag ? 'active' : ''}"
+                on:click={() => (selectedTag = selectedTag === tag ? null : tag)}
+              >
+                #{tag}
+              </button>
+            {/each}
+          </div>
+        {/if}
+
+        <!-- Folder / Category Filtering Pills -->
+        {#if availableFolders.length > 0}
+          <div class="folder-pills-row">
+            <button
+              class="folder-pill {selectedFolder === 'all' ? 'active' : ''}"
+              on:click={() => (selectedFolder = 'all')}
+            >
+              📁 All ({characters.length})
+            </button>
+            {#each availableFolders as folder (folder)}
+              <button
+                class="folder-pill {selectedFolder === folder ? 'active' : ''}"
+                on:click={() => (selectedFolder = selectedFolder === folder ? 'all' : folder)}
+              >
+                📁 {folder} ({characters.filter((c) => c.folder === folder).length})
+              </button>
+            {/each}
+            {#if characters.some((c) => !c.folder)}
+              <button
+                class="folder-pill {selectedFolder === 'uncategorized' ? 'active' : ''}"
+                on:click={() => (selectedFolder = selectedFolder === 'uncategorized' ? 'all' : 'uncategorized')}
+              >
+                📁 Uncategorized ({characters.filter((c) => !c.folder).length})
+              </button>
+            {/if}
+          </div>
+        {/if}
+
         <div class="actions-row">
           <button
             class="primary-action-btn"
@@ -179,6 +258,13 @@
           </button>
           <button class="secondary-action-btn" on:click={triggerFileInput} title="Import PNG card or JSON">
             📥 Import
+          </button>
+          <button
+            class="secondary-action-btn url-import-toggle {isUrlImportOpen ? 'active' : ''}"
+            on:click={() => (isUrlImportOpen = !isUrlImportOpen)}
+            title="Import from Chub.ai or CharacterHub URL"
+          >
+            🌐 URL
           </button>
         </div>
       </div>
@@ -223,9 +309,12 @@
                 <p class="char-desc">
                   {char.card.data.description || char.card.data.personality || 'No description'}
                 </p>
-                {#if char.card.data.tags && char.card.data.tags.length > 0}
+                {#if (char.card.data.tags && char.card.data.tags.length > 0) || char.folder}
                   <div class="char-tags">
-                    {#each char.card.data.tags.slice(0, 3) as tag (tag)}
+                    {#if char.folder}
+                      <span class="folder-badge">📁 {char.folder}</span>
+                    {/if}
+                    {#each (char.card.data.tags || []).slice(0, 3) as tag (tag)}
                       <span class="tag-pill">{tag}</span>
                     {/each}
                   </div>
@@ -579,19 +668,130 @@
     gap: 0.5rem;
     border-bottom: 1px solid #313244;
   }
-
-  .search-input {
+  .search-input-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
     background: #1e1e2e;
     border: 1px solid #45475a;
     border-radius: 8px;
-    padding: 0.55rem 0.8rem;
+    padding: 0 0.6rem;
+    transition: border-color 0.15s ease;
+  }
+
+  .search-input-wrapper:focus-within {
+    border-color: #cba6f7;
+  }
+
+  .search-icon {
+    font-size: 0.85rem;
+    opacity: 0.6;
+    margin-right: 0.4rem;
+  }
+
+  .search-input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    padding: 0.55rem 0;
     color: #cdd6f4;
     font-size: 0.88rem;
     outline: none;
   }
 
-  .search-input:focus {
+  .clear-search-btn {
+    background: transparent;
+    border: none;
+    color: #6c7086;
+    cursor: pointer;
+    font-size: 0.8rem;
+    padding: 0.2rem 0.4rem;
+  }
+
+  .clear-search-btn:hover {
+    color: #cdd6f4;
+  }
+
+  /* Tag Filtering Chips */
+  .tag-chips-row {
+    display: flex;
+    gap: 0.35rem;
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+    scrollbar-width: thin;
+  }
+
+  .tag-chip {
+    white-space: nowrap;
+    background: #181825;
+    border: 1px solid #3b3d54;
+    color: #a6adc8;
+    padding: 0.2rem 0.5rem;
+    border-radius: 12px;
+    font-size: 0.72rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .tag-chip:hover {
+    background: #313244;
+    color: #cdd6f4;
+  }
+
+  .tag-chip.active {
+    background: rgba(137, 180, 250, 0.2);
+    border-color: #89b4fa;
+    color: #89b4fa;
+    font-weight: 700;
+  }
+
+  /* Folder / Category Pills */
+  .folder-pills-row {
+    display: flex;
+    gap: 0.35rem;
+    overflow-x: auto;
+    padding-bottom: 0.25rem;
+    scrollbar-width: thin;
+  }
+
+  .folder-pill {
+    white-space: nowrap;
+    background: #181825;
+    border: 1px solid #3b3d54;
+    color: #cba6f7;
+    padding: 0.2rem 0.55rem;
+    border-radius: 12px;
+    font-size: 0.72rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+
+  .folder-pill:hover {
+    background: #313244;
     border-color: #cba6f7;
+  }
+
+  .folder-pill.active {
+    background: rgba(203, 166, 247, 0.25);
+    border-color: #cba6f7;
+    font-weight: 700;
+  }
+
+  /* URL Import Box */
+  .url-import-toggle.active {
+    background: rgba(203, 166, 247, 0.2);
+    border-color: #cba6f7;
+    color: #cba6f7;
+  }
+
+  .folder-badge {
+    font-size: 0.68rem;
+    background: rgba(203, 166, 247, 0.15);
+    color: #cba6f7;
+    border: 1px solid rgba(203, 166, 247, 0.25);
+    padding: 0.1rem 0.35rem;
+    border-radius: 4px;
+    font-weight: 600;
   }
 
   .actions-row {

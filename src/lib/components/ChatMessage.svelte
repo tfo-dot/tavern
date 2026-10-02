@@ -1,7 +1,11 @@
 <script lang="ts">
-  import type { Character, MessageViewNode } from "../types";
+  import type {
+    Character,
+    MessageViewNode,
+    RegexRule,
+    AppSettings,
+  } from "../types";
   import { formatMessageContent } from "../formatter";
-
   export let message: MessageViewNode;
   export let characters: Character[] = [];
   export let characterName = "Character";
@@ -9,24 +13,16 @@
   export let userName = "You";
   export let userAvatar: string | null = null;
   export let isGenerating = false;
-  export let isLastMessage = false;
   export let isGroupChat = false;
 
   export let onSwipe: (parentId: string | null, newIndex: number) => void;
-  export let onRegenerateSwipe: () => void;
   export let onEdit: (id: string, newContent: string) => void;
   export let onDelete: (id: string) => void;
   export let onOpenImage: ((src: string, alt: string) => void) | undefined =
     undefined;
-  export let onContinue: (() => void) | undefined = undefined;
-  export let onSetSpeaker:
-    | ((
-        messageId: string,
-        characterId: string | null,
-        name: string | null,
-      ) => void)
-    | undefined = undefined;
   export let continuingText: string = "";
+  export let onForkChat: ((id: string) => void) | undefined = undefined;
+  export let regexRules: RegexRule[] = [];
 
   let isEditing = false;
   let editDraft = "";
@@ -55,7 +51,6 @@
   $: displayName = isUser
     ? userName
     : matchedChar?.card.data.name || message.name || characterName;
-
   $: avatarSrc = isUser
     ? userAvatar
     : matchedChar?.avatar_data_url || characterAvatar;
@@ -66,15 +61,9 @@
     displayContent,
     displayName,
     userName,
+    regexRules,
   );
 
-  function handleSelectSpeaker(charId: string) {
-    const ch = characters.find((c) => c.id === charId);
-    if (ch && onSetSpeaker) {
-      onSetSpeaker(message.id, ch.id, ch.card.data.name);
-    }
-    isChangingSpeaker = false;
-  }
   function startEdit() {
     editDraft = message.content;
     isEditing = true;
@@ -201,34 +190,35 @@
   {/if}
   <!-- Avatar -->
   <div class="avatar-col">
-    {#if avatarSrc}
-      <img
-        src={avatarSrc}
-        alt={displayName}
-        class="avatar-img clickable-avatar"
-        on:click={() =>
-          avatarSrc && onOpenImage && onOpenImage(avatarSrc, displayName)}
-        role="presentation"
-      />
-    {:else}
-      <div
-        class="avatar-placeholder {isUser
-          ? 'user-avatar'
-          : 'char-avatar'} clickable-avatar"
-        on:click={() =>
-          avatarSrc && onOpenImage && onOpenImage(avatarSrc, displayName)}
-        role="presentation"
-      >
-        {initials}
-      </div>
-    {/if}
+    <div class="avatar-wrapper">
+      {#if avatarSrc}
+        <img
+          src={avatarSrc}
+          alt={displayName}
+          class="avatar-img clickable-avatar"
+          on:click={() =>
+            avatarSrc && onOpenImage && onOpenImage(avatarSrc, displayName)}
+          role="presentation"
+        />
+      {:else}
+        <div
+          class="avatar-placeholder {isUser
+            ? 'user-avatar'
+            : 'char-avatar'} clickable-avatar"
+          on:click={() =>
+            avatarSrc && onOpenImage && onOpenImage(avatarSrc, displayName)}
+          role="presentation"
+        >
+          {initials}
+        </div>
+      {/if}
+    </div>
   </div>
-
   <!-- Message Content Column -->
   <div class="message-content-col">
     <!-- Header -->
     <div class="message-header">
-      {#if isGroupChat && !isUser && characters.length > 0 && onSetSpeaker}
+      {#if isGroupChat && !isUser && characters.length > 0}
         <div class="speaker-selector-container">
           <button
             type="button"
@@ -256,7 +246,6 @@
                   (message.character_id || matchedChar?.id)
                     ? 'active'
                     : ''}"
-                  on:click={() => handleSelectSpeaker(ch.id)}
                 >
                   {#if ch.avatar_data_url}
                     <img
@@ -279,7 +268,7 @@
         <span class="sender-name">{displayName}</span>
       {/if}
       <span class="role-badge {isUser ? 'badge-user' : 'badge-assistant'}">
-        {isUser ? "User" : "Character"}
+        {isUser ? "User" : "Bot"}
       </span>
       <!-- Swipe Pagination if multiple branches exist -->
       {#if !isUser && message.sibling_total > 1}
@@ -308,24 +297,6 @@
 
       <!-- Message Actions Toolbar -->
       <div class="message-actions">
-        {#if !isUser && isLastMessage}
-          <button
-            class="action-icon-btn continue-btn"
-            disabled={isGenerating}
-            on:click={() => onContinue && onContinue()}
-            title="Continue AI message generation"
-          >
-            ▶ Continue
-          </button>
-          <button
-            class="action-icon-btn swipe-new-btn"
-            disabled={isGenerating}
-            on:click={onRegenerateSwipe}
-            title="Regenerate / Swipe alternate reply"
-          >
-            🔄 Swipe
-          </button>
-        {/if}
         <button
           class="action-icon-btn"
           on:click={copyText}
@@ -333,6 +304,15 @@
         >
           {copied ? "✓" : "📋"}
         </button>
+        {#if onForkChat}
+          <button
+            class="action-icon-btn fork-btn"
+            on:click={() => onForkChat && onForkChat(message.id)}
+            title="Fork chat from this message"
+          >
+            🔀
+          </button>
+        {/if}
         {#if !isEditing}
           <button
             class="action-icon-btn"
@@ -570,30 +550,6 @@
   .action-icon-btn:hover {
     background: #313244;
     color: #cdd6f4;
-  }
-
-  .swipe-new-btn {
-    background: rgba(203, 166, 247, 0.15);
-    border-color: rgba(203, 166, 247, 0.4);
-    color: #cba6f7;
-    font-weight: 600;
-  }
-
-  .swipe-new-btn:hover:not(:disabled) {
-    background: rgba(203, 166, 247, 0.3);
-    color: #f5c2e7;
-  }
-
-  .continue-btn {
-    background: rgba(137, 180, 250, 0.15);
-    border-color: rgba(137, 180, 250, 0.4);
-    color: #89b4fa;
-    font-weight: 600;
-  }
-
-  .continue-btn:hover:not(:disabled) {
-    background: rgba(137, 180, 250, 0.3);
-    color: #b4befe;
   }
 
   .delete-btn:hover {
@@ -875,16 +831,14 @@
       opacity: 1;
       gap: 0.25rem;
     }
+  }
 
-    .swipe-new-btn,
-    .continue-btn {
-      display: none;
-    }
-    .action-icon-btn {
-      padding: 0.3rem 0.45rem;
-      font-size: 0.75rem;
-    }
+  .avatar-wrapper {
+    position: relative;
+    display: inline-block;
+  }
 
+  @media (max-width: 640px) {
     .message-body {
       font-size: 0.92rem;
       line-height: 1.5;
@@ -893,5 +847,91 @@
     .rendered-text :global(img) {
       max-height: 360px;
     }
+  }
+  :global(.thinking-block) {
+    margin: 0.5rem 0 0.8rem 0;
+    border: 1px solid rgba(203, 166, 247, 0.22);
+    background: rgba(30, 30, 46, 0.6);
+    border-radius: 10px;
+    overflow: hidden;
+    font-size: 0.85rem;
+    transition:
+      border-color 0.2s ease,
+      background 0.2s ease;
+  }
+
+  :global(.thinking-block:hover) {
+    border-color: rgba(203, 166, 247, 0.4);
+    background: rgba(30, 30, 46, 0.8);
+  }
+
+  :global(.thinking-summary) {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.45rem 0.75rem;
+    cursor: pointer;
+    user-select: none;
+    background: rgba(49, 50, 68, 0.3);
+    font-weight: 600;
+    color: #cba6f7;
+    font-size: 0.8rem;
+    list-style: none;
+  }
+
+  :global(.thinking-summary::-webkit-details-marker) {
+    display: none;
+  }
+
+  :global(.thinking-icon) {
+    font-size: 0.9rem;
+    flex-shrink: 0;
+  }
+
+  :global(.thinking-label) {
+    flex: 1;
+    letter-spacing: 0.02em;
+  }
+
+  :global(.thinking-badge) {
+    font-size: 0.68rem;
+    padding: 0.12rem 0.4rem;
+    border-radius: 6px;
+    background: rgba(203, 166, 247, 0.15);
+    color: #cba6f7;
+    font-weight: 500;
+  }
+
+  :global(.thinking-streaming-indicator) {
+    font-size: 0.7rem;
+    padding: 0.12rem 0.45rem;
+    border-radius: 6px;
+    background: rgba(137, 180, 250, 0.2);
+    color: #89b4fa;
+    font-weight: 600;
+    animation: thinking-pulse 1.5s infinite ease-in-out;
+  }
+
+  @keyframes thinking-pulse {
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.45;
+    }
+  }
+
+  :global(.thinking-content) {
+    padding: 0.65rem 0.85rem;
+    color: #a6adc8;
+    font-style: italic;
+    border-top: 1px solid rgba(49, 50, 68, 0.4);
+    line-height: 1.5;
+    background: rgba(17, 17, 27, 0.25);
+  }
+
+  :global(.thinking-content p) {
+    margin: 0.25rem 0;
   }
 </style>

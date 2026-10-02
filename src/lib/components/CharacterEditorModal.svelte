@@ -7,17 +7,20 @@
     LorebookEntry,
     LorebookPosition,
   } from "../types";
-  import { exportCardJson, exportCardPng, getAllLorebooks } from "../api";
+  import { getAllLorebooks } from "../api";
 
   export let character: Character | null = null;
   export let isOpen = false;
   export let onSave: (saved: Character) => void;
   export let onClose: () => void;
 
-  let activeTab: "basic" | "greetings" | "lorebook" | "advanced" = "basic";
+  let activeTab: "basic" | "greetings" | "sprites" | "lorebook" | "advanced" =
+    "basic";
+  let draftSprites: Record<string, string> = {};
   let fileInputEl: HTMLInputElement;
   let tagInputStr = "";
 
+  let draftFolder = "";
   let draftCard: CharacterCardV2;
   let draftAvatar: string | null = null;
   let draftId: string | null = null;
@@ -56,6 +59,8 @@
       draftAvatar = character.avatar_data_url;
       alternateGreetings = [...(character.card.data.alternate_greetings || [])];
       tagInputStr = (character.card.data.tags || []).join(", ");
+      draftFolder = character.folder || "";
+      draftSprites = JSON.parse(JSON.stringify(character.sprites || {}));
       linkedLorebookIds = [...(character.card.data.lorebook_ids || [])];
 
       if (character.card.data.character_book) {
@@ -102,7 +107,9 @@
       draftAvatar = null;
       alternateGreetings = [];
       tagInputStr = "";
+      draftFolder = "";
       linkedLorebookIds = [];
+      draftSprites = {};
       hasEmbeddedBook = false;
       embeddedBook = {
         name: null,
@@ -301,35 +308,21 @@
     alternateGreetings = alternateGreetings.filter((_, i) => i !== index);
   }
 
-  async function handleExportPng() {
-    if (!draftId) return;
-    try {
-      const bytes = await exportCardPng(draftId);
-      const blob = new Blob([new Uint8Array(bytes)], { type: "image/png" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${draftCard.data.name || "character"}_card.png`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      alert(`Export failed: ${e}`);
-    }
-  }
-
-  async function handleExportJson() {
-    if (!draftId) return;
-    try {
-      const jsonStr = await exportCardJson(draftId);
-      const blob = new Blob([jsonStr], { type: "application/json" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${draftCard.data.name || "character"}_card.json`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch (e) {
-      alert(`Export failed: ${e}`);
+  function handleSpriteFile(emotion: string, e: Event) {
+    const target = e.target as HTMLInputElement;
+    if (target.files && target.files[0]) {
+      const file = target.files[0];
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          draftSprites = {
+            ...draftSprites,
+            [emotion]: event.target.result as string,
+          };
+        }
+      };
+      reader.readAsDataURL(file);
+      target.value = "";
     }
   }
 
@@ -363,10 +356,11 @@
       id: draftId || crypto.randomUUID(),
       card: draftCard,
       avatar_data_url: draftAvatar,
+      folder: draftFolder.trim() || null,
+      sprites: draftSprites,
       created_at: character?.created_at || now,
       updated_at: now,
     };
-
     onSave(characterToSave);
     onClose();
   }
@@ -400,25 +394,6 @@
             ? `Edit: ${draftCard.data.name || "Character"}`
             : "Create New Character"}
         </h2>
-        <div class="header-actions">
-          {#if draftId}
-            <button
-              class="export-btn"
-              on:click={handleExportPng}
-              title="Export as PNG Character Card"
-            >
-              🖼️ Export PNG
-            </button>
-            <button
-              class="export-btn"
-              on:click={handleExportJson}
-              title="Export as JSON Card"
-            >
-              📄 Export JSON
-            </button>
-          {/if}
-          <button class="close-btn" on:click={onClose}>✕</button>
-        </div>
       </div>
 
       <!-- Tab Buttons -->
@@ -510,6 +485,15 @@
                   placeholder="Fantasy, Tavern, Mysterious, Sci-Fi"
                 />
               </div>
+              <div class="form-group">
+                <label for="char-folder">Folder / Category</label>
+                <input
+                  id="char-folder"
+                  type="text"
+                  bind:value={draftFolder}
+                  placeholder="e.g. Fantasy, Sci-Fi, Modern, Favorites"
+                />
+              </div>
             </div>
           </div>
 
@@ -593,7 +577,7 @@
               <p class="hint-text">No alternate greetings added yet.</p>
             {:else}
               <div class="alt-greetings-list">
-                {#each alternateGreetings as altGreeting, i (i)}
+                {#each alternateGreetings as _, i (i)}
                   <div class="alt-greeting-card">
                     <div class="alt-header">
                       <span>Alternate Greeting #{i + 1}</span>
@@ -953,40 +937,6 @@
     margin: 0;
     font-size: 1.25rem;
     color: #cdd6f4;
-  }
-
-  .header-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-  }
-
-  .export-btn {
-    background: #313244;
-    color: #cdd6f4;
-    border: 1px solid #45475a;
-    border-radius: 6px;
-    padding: 0.3rem 0.65rem;
-    font-size: 0.78rem;
-    font-weight: 600;
-    cursor: pointer;
-  }
-  .export-btn:hover {
-    background: #45475a;
-  }
-
-  .close-btn {
-    background: none;
-    border: none;
-    color: #6c7086;
-    font-size: 1.2rem;
-    cursor: pointer;
-    padding: 0.2rem 0.5rem;
-    border-radius: 4px;
-  }
-  .close-btn:hover {
-    color: #cdd6f4;
-    background: #313244;
   }
 
   .tabs-row {

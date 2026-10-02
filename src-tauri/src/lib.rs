@@ -1,15 +1,15 @@
 use std::path::PathBuf;
 use std::sync::Arc;
-use tokio::sync::{watch, Mutex};
+use tokio::sync::{Mutex, watch};
 use uuid::Uuid;
 
 use engine::character::{Character, UserPersona};
-use engine::chat::{resolve_next_speaker, AuthorRole, ChatTree, Group, MessageViewNode};
-use engine::llm::{fetch_models, stream_chat_completion, GenerationParams};
+use engine::chat::{AuthorRole, ChatTree, Group, MessageViewNode, resolve_next_speaker};
+use engine::llm::{GenerationParams, fetch_models_with_type, stream_chat_completion};
 use engine::lorebook::Lorebook;
 use engine::parser::{export_character_json, export_character_png, parse_character_card};
 use engine::prompt::{
-    build_chat_prompt_with_lorebooks, build_group_chat_prompt_with_lorebooks, PromptConfig,
+    PromptConfig, build_chat_prompt_with_lorebooks, build_group_chat_prompt_with_lorebooks,
 };
 use tauri::{Emitter, Manager, State, Window};
 
@@ -47,10 +47,10 @@ async fn save_character(
 ) -> Result<Character, String> {
     state.storage.save_character(&character)?;
     let mut active = state.active_character.lock().await;
-    if let Some(cur) = active.as_ref() {
-        if cur.id == character.id {
-            *active = Some(character.clone());
-        }
+    if let Some(cur) = active.as_ref()
+        && cur.id == character.id
+    {
+        *active = Some(character.clone());
     }
     Ok(character)
 }
@@ -59,16 +59,16 @@ async fn save_character(
 async fn delete_character(id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     state.storage.delete_character(&id)?;
     let mut active_char = state.active_character.lock().await;
-    if let Some(cur) = active_char.as_ref() {
-        if cur.id == id {
-            *active_char = None;
-        }
+    if let Some(cur) = active_char.as_ref()
+        && cur.id == id
+    {
+        *active_char = None;
     }
     let mut active_chat = state.active_chat.lock().await;
-    if let Some(chat) = active_chat.as_ref() {
-        if chat.character_id == id {
-            *active_chat = None;
-        }
+    if let Some(chat) = active_chat.as_ref()
+        && chat.character_id == id
+    {
+        *active_chat = None;
     }
     Ok(())
 }
@@ -133,10 +133,10 @@ async fn get_group(id: String, state: State<'_, Arc<AppState>>) -> Result<Group,
 async fn save_group(group: Group, state: State<'_, Arc<AppState>>) -> Result<Group, String> {
     state.storage.save_group(&group)?;
     let mut active = state.active_group.lock().await;
-    if let Some(cur) = active.as_ref() {
-        if cur.id == group.id {
-            *active = Some(group.clone());
-        }
+    if let Some(cur) = active.as_ref()
+        && cur.id == group.id
+    {
+        *active = Some(group.clone());
     }
     Ok(group)
 }
@@ -145,16 +145,16 @@ async fn save_group(group: Group, state: State<'_, Arc<AppState>>) -> Result<Gro
 async fn delete_group(id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     state.storage.delete_group(&id)?;
     let mut active = state.active_group.lock().await;
-    if let Some(cur) = active.as_ref() {
-        if cur.id == id {
-            *active = None;
-        }
+    if let Some(cur) = active.as_ref()
+        && cur.id == id
+    {
+        *active = None;
     }
     let mut active_chat = state.active_chat.lock().await;
-    if let Some(chat) = active_chat.as_ref() {
-        if chat.group_id.as_deref() == Some(&id) {
-            *active_chat = None;
-        }
+    if let Some(chat) = active_chat.as_ref()
+        && chat.group_id.as_deref() == Some(&id)
+    {
+        *active_chat = None;
     }
     Ok(())
 }
@@ -190,18 +190,17 @@ async fn create_group_chat(
                 speaker_name,
             );
         }
-    } else if let Some(sid) = first_speaker_id {
-        if let Ok(ch) = state.storage.load_character(&sid) {
-            if !ch.card.data.first_mes.trim().is_empty() {
-                tree.append_message_with_author(
-                    AuthorRole::Assistant,
-                    ch.card.data.first_mes.clone(),
-                    None,
-                    Some(sid.clone()),
-                    Some(ch.card.data.name.clone()),
-                );
-            }
-        }
+    } else if let Some(sid) = first_speaker_id
+        && let Ok(ch) = state.storage.load_character(&sid)
+        && !ch.card.data.first_mes.trim().is_empty()
+    {
+        tree.append_message_with_author(
+            AuthorRole::Assistant,
+            ch.card.data.first_mes.clone(),
+            None,
+            Some(sid.clone()),
+            Some(ch.card.data.name.clone()),
+        );
     }
 
     state.storage.save_chat(&tree)?;
@@ -230,20 +229,6 @@ async fn list_group_chats(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<ChatSummary>, String> {
     state.storage.list_chats_for_group(&group_id)
-}
-
-#[tauri::command]
-async fn set_message_author(
-    id: Uuid,
-    character_id: Option<String>,
-    name: Option<String>,
-    state: State<'_, Arc<AppState>>,
-) -> Result<Vec<MessageViewNode>, String> {
-    let mut lock = state.active_chat.lock().await;
-    let tree = lock.as_mut().ok_or("No active chat session")?;
-    tree.set_message_author(id, character_id, name)?;
-    state.storage.save_chat(tree)?;
-    Ok(tree.get_active_view_nodes())
 }
 
 // --- Chat Commands ---
@@ -347,10 +332,10 @@ async fn list_chats(
 async fn delete_chat(chat_id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     state.storage.delete_chat(&chat_id)?;
     let mut active = state.active_chat.lock().await;
-    if let Some(cur) = active.as_ref() {
-        if cur.id.to_string() == chat_id {
-            *active = None;
-        }
+    if let Some(cur) = active.as_ref()
+        && cur.id.to_string() == chat_id
+    {
+        *active = None;
     }
     Ok(())
 }
@@ -482,6 +467,33 @@ async fn switch_branch(
         Err("Branch index out of bounds".into())
     }
 }
+#[tauri::command]
+async fn fork_chat_at_message(
+    message_id: String,
+    new_title: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<ChatTree, String> {
+    let msg_uuid = Uuid::parse_str(&message_id).map_err(|e| e.to_string())?;
+    let active_tree = {
+        let lock = state.active_chat.lock().await;
+        lock.as_ref().ok_or("No active chat session")?.clone()
+    };
+
+    let forked_tree = active_tree.fork_at_message(msg_uuid, new_title)?;
+    state.storage.save_chat(&forked_tree)?;
+
+    {
+        let mut lock = state.active_chat.lock().await;
+        *lock = Some(forked_tree.clone());
+    }
+    {
+        let mut settings = state.settings.lock().await;
+        settings.active_chat_id = Some(forked_tree.id.to_string());
+        let _ = state.storage.save_settings(&settings);
+    }
+
+    Ok(forked_tree)
+}
 
 // --- Settings & Persona Commands ---
 
@@ -533,13 +545,13 @@ async fn delete_user_persona(id: String, state: State<'_, Arc<AppState>>) -> Res
     state.storage.delete_user_persona(&id)?;
     let personas = state.storage.list_user_personas()?;
     let mut persona = state.user_persona.lock().await;
-    if persona.id == id {
-        if let Some(first) = personas.first() {
-            *persona = first.clone();
-            let mut settings = state.settings.lock().await;
-            settings.active_persona_id = Some(first.id.clone());
-            let _ = state.storage.save_settings(&settings);
-        }
+    if persona.id == id
+        && let Some(first) = personas.first()
+    {
+        *persona = first.clone();
+        let mut settings = state.settings.lock().await;
+        settings.active_persona_id = Some(first.id.clone());
+        let _ = state.storage.save_settings(&settings);
     }
     Ok(())
 }
@@ -612,8 +624,12 @@ async fn export_lorebook_json(
 }
 
 #[tauri::command]
-async fn fetch_endpoint_models(endpoint: String, api_key: String) -> Result<Vec<String>, String> {
-    fetch_models(&endpoint, &api_key).await
+async fn fetch_endpoint_models(
+    endpoint: String,
+    api_key: String,
+    api_type: Option<String>,
+) -> Result<Vec<String>, String> {
+    fetch_models_with_type(&endpoint, &api_key, api_type.as_deref()).await
 }
 // --- Generation & Streaming Commands ---
 
@@ -653,6 +669,12 @@ async fn generate_reply(
         max_context_tokens: settings.max_context_tokens,
         max_response_tokens: settings.max_tokens,
         include_examples: true,
+        authors_note: Some(settings.authors_note.clone()),
+        authors_note_depth: Some(settings.authors_note_depth),
+        authors_note_interval: Some(settings.authors_note_interval),
+        vector_memory_enabled: settings.vector_memory_enabled,
+        vector_memory_top_k: settings.vector_memory_top_k,
+        vector_memory_threshold: settings.vector_memory_threshold,
     };
 
     let is_group_chat =
@@ -726,10 +748,10 @@ async fn generate_reply(
 
         let mut other_chars = Vec::new();
         for member in &group.members {
-            if member.character_id != target_char.id {
-                if let Ok(ch) = state.storage.load_character(&member.character_id) {
-                    other_chars.push(ch);
-                }
+            if member.character_id != target_char.id
+                && let Ok(ch) = state.storage.load_character(&member.character_id)
+            {
+                other_chars.push(ch);
             }
         }
 
@@ -756,10 +778,10 @@ async fn generate_reply(
                 linked_books.push(ob);
             }
             for lb_id in &other.card.data.lorebook_ids {
-                if !target_char.card.data.lorebook_ids.contains(lb_id) {
-                    if let Ok(b) = state.storage.load_lorebook(lb_id) {
-                        linked_books.push(b);
-                    }
+                if !target_char.card.data.lorebook_ids.contains(lb_id)
+                    && let Ok(b) = state.storage.load_lorebook(lb_id)
+                {
+                    linked_books.push(b);
                 }
             }
         }
@@ -769,10 +791,10 @@ async fn generate_reply(
 
         let mut global_books = Vec::new();
         for lb_id in &settings.global_lorebook_ids {
-            if !target_char.card.data.lorebook_ids.contains(lb_id) {
-                if let Ok(b) = state.storage.load_lorebook(lb_id) {
-                    global_books.push(b);
-                }
+            if !target_char.card.data.lorebook_ids.contains(lb_id)
+                && let Ok(b) = state.storage.load_lorebook(lb_id)
+            {
+                global_books.push(b);
             }
         }
         for b in &global_books {
@@ -821,10 +843,10 @@ async fn generate_reply(
 
         let mut global_books = Vec::new();
         for lb_id in &settings.global_lorebook_ids {
-            if !character.card.data.lorebook_ids.contains(lb_id) {
-                if let Ok(book) = state.storage.load_lorebook(lb_id) {
-                    global_books.push(book);
-                }
+            if !character.card.data.lorebook_ids.contains(lb_id)
+                && let Ok(book) = state.storage.load_lorebook(lb_id)
+            {
+                global_books.push(book);
             }
         }
         for book in &global_books {
@@ -849,6 +871,9 @@ async fn generate_reply(
         presence_penalty: settings.presence_penalty,
         max_tokens: settings.max_tokens,
         stop: settings.stop_sequences.clone(),
+        min_p: settings.min_p,
+        top_k: settings.top_k,
+        repetition_penalty: settings.repetition_penalty,
     };
 
     // 3. Setup cancellation token
@@ -870,6 +895,7 @@ async fn generate_reply(
     let result = stream_chat_completion(
         &settings.endpoint,
         &settings.api_key,
+        settings.api_type.as_deref(),
         &settings.active_model,
         &prompt_messages,
         &gen_params,
@@ -886,7 +912,12 @@ async fn generate_reply(
         *abort = None;
     }
 
-    let accumulated_text = result?;
+    let mut accumulated_text = result?;
+    // Apply output regex rules
+    accumulated_text =
+        engine::regex_engine::apply_regex_rules(&accumulated_text, &settings.regex_rules, |r| {
+            r.run_on_output
+        });
 
     // 4. Save assistant response into ChatTree with author metadata
     if !accumulated_text.trim().is_empty() {
@@ -932,6 +963,173 @@ async fn abort_generation(state: State<'_, Arc<AppState>>) -> Result<(), String>
     if let Some(tx) = abort.as_ref() {
         let _ = tx.send(true);
     }
+    Ok(())
+}
+
+#[tauri::command]
+async fn calculate_context_breakdown(
+    draft_input: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<engine::prompt::ContextBreakdown, String> {
+    let (chat_tree, user, settings, active_group_opt, active_char_opt) = {
+        let chat_lock = state.active_chat.lock().await;
+        let tree = chat_lock.as_ref().ok_or("No active chat session")?.clone();
+
+        let user_lock = state.user_persona.lock().await;
+        let user = user_lock.clone();
+
+        let settings_lock = state.settings.lock().await;
+        let settings = settings_lock.clone();
+
+        let group_lock = state.active_group.lock().await;
+        let group = group_lock.clone();
+
+        let char_lock = state.active_character.lock().await;
+        let character = char_lock.clone();
+
+        (tree, user, settings, group, character)
+    };
+
+    let prompt_config = PromptConfig {
+        system_template: settings.system_template.clone(),
+        max_context_tokens: settings.max_context_tokens,
+        max_response_tokens: settings.max_tokens,
+        include_examples: true,
+        authors_note: Some(settings.authors_note.clone()),
+        authors_note_depth: Some(settings.authors_note_depth),
+        authors_note_interval: Some(settings.authors_note_interval),
+        vector_memory_enabled: settings.vector_memory_enabled,
+        vector_memory_top_k: settings.vector_memory_top_k,
+        vector_memory_threshold: settings.vector_memory_threshold,
+    };
+
+    let is_group_chat =
+        chat_tree.group_id.is_some() || chat_tree.character_id.starts_with("group:");
+
+    if is_group_chat {
+        let group = if let Some(g) = active_group_opt {
+            g
+        } else if let Some(gid) = &chat_tree.group_id {
+            state.storage.load_group(gid)?
+        } else if let Some(gid) = chat_tree.character_id.strip_prefix("group:") {
+            state.storage.load_group(gid)?
+        } else {
+            return Err("Group data not found for group chat".to_string());
+        };
+
+        let target_id = group
+            .members
+            .iter()
+            .find(|m| m.enabled && !m.mute)
+            .map(|m| m.character_id.clone())
+            .unwrap_or_else(|| {
+                group
+                    .members
+                    .first()
+                    .map(|m| m.character_id.clone())
+                    .unwrap_or_default()
+            });
+
+        let target_char = state.storage.load_character(&target_id)?;
+        let mut other_chars = Vec::new();
+        for member in &group.members {
+            if member.character_id != target_char.id
+                && let Ok(ch) = state.storage.load_character(&member.character_id)
+            {
+                other_chars.push(ch);
+            }
+        }
+
+        let mut active_lorebooks = Vec::new();
+        if let Some(cb) = &target_char.card.data.character_book {
+            let b = cb.to_lorebook();
+            active_lorebooks.push(b);
+        }
+        for lb_id in &target_char.card.data.lorebook_ids {
+            if let Ok(b) = state.storage.load_lorebook(lb_id) {
+                active_lorebooks.push(b);
+            }
+        }
+        for other in &other_chars {
+            if let Some(cb) = &other.card.data.character_book {
+                let b = cb.to_lorebook();
+                active_lorebooks.push(b);
+            }
+            for lb_id in &other.card.data.lorebook_ids {
+                if let Ok(b) = state.storage.load_lorebook(lb_id) {
+                    active_lorebooks.push(b);
+                }
+            }
+        }
+        for lb_id in &settings.global_lorebook_ids {
+            if let Ok(b) = state.storage.load_lorebook(lb_id) {
+                active_lorebooks.push(b);
+            }
+        }
+
+        let lorebook_refs: Vec<&Lorebook> = active_lorebooks.iter().collect();
+        let other_refs: Vec<(&engine::character::CharacterData, &str)> = other_chars
+            .iter()
+            .map(|c| (&c.card.data, c.id.as_str()))
+            .collect();
+
+        Ok(engine::prompt::calculate_group_context_breakdown(
+            &target_char.card.data,
+            &target_char.id,
+            &other_refs,
+            &user,
+            &chat_tree,
+            &prompt_config,
+            &lorebook_refs,
+            draft_input.as_deref(),
+        ))
+    } else {
+        let character = active_char_opt.ok_or("No active character")?;
+        let mut active_lorebooks = Vec::new();
+        if let Some(cb) = &character.card.data.character_book {
+            let b = cb.to_lorebook();
+            active_lorebooks.push(b);
+        }
+        for lb_id in &character.card.data.lorebook_ids {
+            if let Ok(b) = state.storage.load_lorebook(lb_id) {
+                active_lorebooks.push(b);
+            }
+        }
+        for lb_id in &settings.global_lorebook_ids {
+            if let Ok(b) = state.storage.load_lorebook(lb_id) {
+                active_lorebooks.push(b);
+            }
+        }
+        let lorebook_refs: Vec<&Lorebook> = active_lorebooks.iter().collect();
+
+        Ok(engine::prompt::calculate_context_breakdown(
+            &character.card.data,
+            &user,
+            &chat_tree,
+            &prompt_config,
+            &lorebook_refs,
+            draft_input.as_deref(),
+        ))
+    }
+}
+
+#[tauri::command]
+async fn update_chat_authors_note(
+    authors_note: String,
+    depth: Option<usize>,
+    interval: Option<usize>,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    let mut lock = state.active_chat.lock().await;
+    let tree = lock.as_mut().ok_or("No active chat session")?;
+    tree.authors_note = authors_note;
+    if let Some(d) = depth {
+        tree.authors_note_depth = d;
+    }
+    if let Some(i) = interval {
+        tree.authors_note_interval = i;
+    }
+    state.storage.save_chat(tree)?;
     Ok(())
 }
 
@@ -1011,6 +1209,7 @@ async fn update_sync_settings(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             // Resolve app storage directory
@@ -1021,6 +1220,7 @@ pub fn run() {
 
             let storage = Arc::new(StorageManager::new(base_dir.clone()));
             let settings = storage.load_settings();
+
             let user_persona = if let Some(p_id) = &settings.active_persona_id {
                 storage.load_user_persona(p_id).unwrap_or_else(|_| {
                     storage
@@ -1112,7 +1312,6 @@ pub fn run() {
             delete_group,
             create_group_chat,
             list_group_chats,
-            set_message_author,
             create_chat,
             load_chat,
             list_chats,
@@ -1144,6 +1343,9 @@ pub fn run() {
             scan_sync_peers,
             trigger_sync,
             update_sync_settings,
+            calculate_context_breakdown,
+            update_chat_authors_note,
+            fork_chat_at_message,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

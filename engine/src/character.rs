@@ -88,20 +88,33 @@ pub struct Character {
     pub id: String,
     pub card: CharacterCardV2,
     pub avatar_data_url: Option<String>,
+    #[serde(default)]
+    pub folder: Option<String>,
+    #[serde(default)]
+    pub sprites: std::collections::HashMap<String, String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
 
 impl Character {
     pub fn new(name: String, first_mes: String, avatar_data_url: Option<String>) -> Self {
-        let mut card = CharacterCardV2::default();
-        card.data.name = name;
-        card.data.first_mes = first_mes;
+        let card = CharacterCardV2 {
+            data: CharacterData {
+                name,
+                first_mes,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
         let now = Utc::now();
+
         Self {
             id: Uuid::new_v4().to_string(),
             card,
             avatar_data_url,
+            folder: None,
+            sprites: std::collections::HashMap::new(),
             created_at: now,
             updated_at: now,
         }
@@ -113,6 +126,8 @@ impl Character {
             id: Uuid::new_v4().to_string(),
             card,
             avatar_data_url,
+            folder: None,
+            sprites: std::collections::HashMap::new(),
             created_at: now,
             updated_at: now,
         }

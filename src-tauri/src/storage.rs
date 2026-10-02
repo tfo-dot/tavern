@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use engine::character::{Character, CharacterCardV2, UserPersona};
-use engine::chat::{export_sillytavern_chat_jsonl, import_sillytavern_chat_jsonl, ChatTree, Group};
+use engine::chat::{ChatTree, Group, export_sillytavern_chat_jsonl, import_sillytavern_chat_jsonl};
 use engine::crdt::TavernCrdtDoc;
-use engine::lorebook::{parse_lorebook, Lorebook};
+use engine::lorebook::{Lorebook, parse_lorebook};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::Read;
@@ -10,6 +10,37 @@ use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::sync::protocol::SyncStats;
+
+fn default_min_p() -> f32 {
+    0.0
+}
+
+fn default_top_k() -> u32 {
+    40
+}
+
+fn default_repetition_penalty() -> f32 {
+    1.05
+}
+
+fn default_authors_note_depth() -> usize {
+    1
+}
+
+fn default_authors_note_interval() -> usize {
+    1
+}
+fn default_true() -> bool {
+    true
+}
+
+fn default_rag_top_k() -> usize {
+    3
+}
+
+fn default_rag_threshold() -> f32 {
+    0.25
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppSettings {
@@ -36,6 +67,28 @@ pub struct AppSettings {
     pub sync_port: Option<u16>,
     #[serde(default)]
     pub sync_pin: Option<String>,
+    #[serde(default = "default_min_p")]
+    pub min_p: f32,
+    #[serde(default = "default_top_k")]
+    pub top_k: u32,
+    #[serde(default = "default_repetition_penalty")]
+    pub repetition_penalty: f32,
+    #[serde(default)]
+    pub api_type: Option<String>,
+    #[serde(default)]
+    pub authors_note: String,
+    #[serde(default = "default_authors_note_depth")]
+    pub authors_note_depth: usize,
+    #[serde(default = "default_authors_note_interval")]
+    pub authors_note_interval: usize,
+    #[serde(default = "engine::regex_engine::default_regex_rules")]
+    pub regex_rules: Vec<engine::regex_engine::RegexRule>,
+    #[serde(default = "default_true")]
+    pub vector_memory_enabled: bool,
+    #[serde(default = "default_rag_top_k")]
+    pub vector_memory_top_k: usize,
+    #[serde(default = "default_rag_threshold")]
+    pub vector_memory_threshold: f32,
 }
 
 impl Default for AppSettings {
@@ -59,6 +112,17 @@ impl Default for AppSettings {
             device_name: None,
             sync_port: None,
             sync_pin: None,
+            min_p: 0.0,
+            top_k: 40,
+            repetition_penalty: 1.05,
+            api_type: None,
+            authors_note: String::new(),
+            authors_note_depth: 1,
+            authors_note_interval: 1,
+            regex_rules: engine::regex_engine::default_regex_rules(),
+            vector_memory_enabled: true,
+            vector_memory_top_k: 3,
+            vector_memory_threshold: 0.25
         }
     }
 }
@@ -154,25 +218,24 @@ impl StorageManager {
 
     fn ensure_starter_persona(&self) {
         // Check if legacy user_persona.json exists and migrate it
-        if self.legacy_user_persona_path().exists() {
-            if let Ok(content) = fs::read_to_string(self.legacy_user_persona_path()) {
-                if let Ok(persona) = serde_json::from_str::<UserPersona>(&content) {
-                    let _ = self.save_user_persona(&persona);
-                }
-            }
+        if self.legacy_user_persona_path().exists()
+            && let Ok(content) = fs::read_to_string(self.legacy_user_persona_path())
+            && let Ok(persona) = serde_json::from_str::<UserPersona>(&content)
+        {
+            let _ = self.save_user_persona(&persona);
         }
 
         // If personas dir is empty, create default persona
-        if let Ok(entries) = fs::read_dir(self.personas_dir()) {
-            if entries.count() == 0 {
-                let default_p = UserPersona {
-                    id: "default_user".to_string(),
-                    name: "User".to_string(),
-                    description: "".to_string(),
-                    avatar_data_url: None,
-                };
-                let _ = self.save_user_persona(&default_p);
-            }
+        if let Ok(entries) = fs::read_dir(self.personas_dir())
+            && entries.count() == 0
+        {
+            let default_p = UserPersona {
+                id: "default_user".to_string(),
+                name: "User".to_string(),
+                description: "".to_string(),
+                avatar_data_url: None,
+            };
+            let _ = self.save_user_persona(&default_p);
         }
     }
 
@@ -203,12 +266,11 @@ impl StorageManager {
         if let Ok(entries) = fs::read_dir(self.characters_dir()) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(character) = serde_json::from_str::<Character>(&content) {
-                            characters.push(character);
-                        }
-                    }
+                if path.extension().and_then(|s| s.to_str()) == Some("json")
+                    && let Ok(content) = fs::read_to_string(&path)
+                    && let Ok(character) = serde_json::from_str::<Character>(&content)
+                {
+                    characters.push(character);
                 }
             }
         }
@@ -260,40 +322,38 @@ impl StorageManager {
         if let Ok(entries) = fs::read_dir(self.chats_dir()) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(chat) = serde_json::from_str::<ChatTree>(&content) {
-                            if chat.character_id == character_id {
-                                let (msg_count, preview) = {
-                                    let active_path = chat.get_active_path();
-                                    let count = active_path.len();
-                                    let prev = active_path
-                                        .last()
-                                        .map(|m| {
-                                            let c = m.content.chars().take(80).collect::<String>();
-                                            if m.content.chars().count() > 80 {
-                                                format!("{c}...")
-                                            } else {
-                                                c
-                                            }
-                                        })
-                                        .unwrap_or_else(|| "Empty chat".to_string());
-                                    (count, prev)
-                                };
+                if path.extension().and_then(|s| s.to_str()) == Some("json")
+                    && let Ok(content) = fs::read_to_string(&path)
+                    && let Ok(chat) = serde_json::from_str::<ChatTree>(&content)
+                    && chat.character_id == character_id
+                {
+                    let (msg_count, preview) = {
+                        let active_path = chat.get_active_path();
+                        let count = active_path.len();
+                        let prev = active_path
+                            .last()
+                            .map(|m| {
+                                let c = m.content.chars().take(80).collect::<String>();
+                                if m.content.chars().count() > 80 {
+                                    format!("{c}...")
+                                } else {
+                                    c
+                                }
+                            })
+                            .unwrap_or_else(|| "Empty chat".to_string());
+                        (count, prev)
+                    };
 
-                                summaries.push(ChatSummary {
-                                    id: chat.id.to_string(),
-                                    character_id: chat.character_id,
-                                    title: chat.title,
-                                    created_at: chat.created_at,
-                                    updated_at: chat.updated_at,
-                                    message_count: msg_count,
-                                    last_message_preview: preview,
-                                    group_id: chat.group_id,
-                                });
-                            }
-                        }
-                    }
+                    summaries.push(ChatSummary {
+                        id: chat.id.to_string(),
+                        character_id: chat.character_id,
+                        title: chat.title,
+                        created_at: chat.created_at,
+                        updated_at: chat.updated_at,
+                        message_count: msg_count,
+                        last_message_preview: preview,
+                        group_id: chat.group_id,
+                    });
                 }
             }
         }
@@ -306,40 +366,38 @@ impl StorageManager {
         if let Ok(entries) = fs::read_dir(self.chats_dir()) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(chat) = serde_json::from_str::<ChatTree>(&content) {
-                            if chat.group_id.as_deref() == Some(group_id) {
-                                let (msg_count, preview) = {
-                                    let active_path = chat.get_active_path();
-                                    let count = active_path.len();
-                                    let prev = active_path
-                                        .last()
-                                        .map(|m| {
-                                            let c = m.content.chars().take(80).collect::<String>();
-                                            if m.content.chars().count() > 80 {
-                                                format!("{c}...")
-                                            } else {
-                                                c
-                                            }
-                                        })
-                                        .unwrap_or_else(|| "Empty chat".to_string());
-                                    (count, prev)
-                                };
+                if path.extension().and_then(|s| s.to_str()) == Some("json")
+                    && let Ok(content) = fs::read_to_string(&path)
+                    && let Ok(chat) = serde_json::from_str::<ChatTree>(&content)
+                    && chat.group_id.as_deref() == Some(group_id)
+                {
+                    let (msg_count, preview) = {
+                        let active_path = chat.get_active_path();
+                        let count = active_path.len();
+                        let prev = active_path
+                            .last()
+                            .map(|m| {
+                                let c = m.content.chars().take(80).collect::<String>();
+                                if m.content.chars().count() > 80 {
+                                    format!("{c}...")
+                                } else {
+                                    c
+                                }
+                            })
+                            .unwrap_or_else(|| "Empty chat".to_string());
+                        (count, prev)
+                    };
 
-                                summaries.push(ChatSummary {
-                                    id: chat.id.to_string(),
-                                    character_id: chat.character_id,
-                                    title: chat.title,
-                                    created_at: chat.created_at,
-                                    updated_at: chat.updated_at,
-                                    message_count: msg_count,
-                                    last_message_preview: preview,
-                                    group_id: chat.group_id,
-                                });
-                            }
-                        }
-                    }
+                    summaries.push(ChatSummary {
+                        id: chat.id.to_string(),
+                        character_id: chat.character_id,
+                        title: chat.title,
+                        created_at: chat.created_at,
+                        updated_at: chat.updated_at,
+                        message_count: msg_count,
+                        last_message_preview: preview,
+                        group_id: chat.group_id,
+                    });
                 }
             }
         }
@@ -374,12 +432,11 @@ impl StorageManager {
         if let Ok(entries) = fs::read_dir(self.groups_dir()) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(group) = serde_json::from_str::<Group>(&content) {
-                            groups.push(group);
-                        }
-                    }
+                if path.extension().and_then(|s| s.to_str()) == Some("json")
+                    && let Ok(content) = fs::read_to_string(&path)
+                    && let Ok(group) = serde_json::from_str::<Group>(&content)
+                {
+                    groups.push(group);
                 }
             }
         }
@@ -409,11 +466,11 @@ impl StorageManager {
         if path.exists() {
             fs::remove_file(path).map_err(|e| e.to_string())?;
         }
-        if let Ok(doc) = self.load_crdt_doc() {
-            if let Ok(uuid_val) = Uuid::parse_str(id) {
-                let _ = doc.delete_chat(&uuid_val);
-                let _ = self.save_crdt_doc(&doc);
-            }
+        if let Ok(doc) = self.load_crdt_doc()
+            && let Ok(uuid_val) = Uuid::parse_str(id)
+        {
+            let _ = doc.delete_chat(&uuid_val);
+            let _ = self.save_crdt_doc(&doc);
         }
         Ok(())
     }
@@ -481,10 +538,10 @@ impl StorageManager {
     }
 
     pub fn load_settings(&self) -> AppSettings {
-        if let Ok(content) = fs::read_to_string(self.settings_path()) {
-            if let Ok(settings) = serde_json::from_str::<AppSettings>(&content) {
-                return settings;
-            }
+        if let Ok(content) = fs::read_to_string(self.settings_path())
+            && let Ok(settings) = serde_json::from_str::<AppSettings>(&content)
+        {
+            return settings;
         }
         let default_settings = AppSettings::default();
         let _ = self.save_settings(&default_settings);
@@ -518,12 +575,11 @@ impl StorageManager {
         if let Ok(entries) = fs::read_dir(self.personas_dir()) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(persona) = serde_json::from_str::<UserPersona>(&content) {
-                            personas.push(persona);
-                        }
-                    }
+                if path.extension().and_then(|s| s.to_str()) == Some("json")
+                    && let Ok(content) = fs::read_to_string(&path)
+                    && let Ok(persona) = serde_json::from_str::<UserPersona>(&content)
+                {
+                    personas.push(persona);
                 }
             }
         }
@@ -574,12 +630,11 @@ impl StorageManager {
         if let Ok(entries) = fs::read_dir(self.lorebooks_dir()) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(book) = serde_json::from_str::<Lorebook>(&content) {
-                            lorebooks.push(book);
-                        }
-                    }
+                if path.extension().and_then(|s| s.to_str()) == Some("json")
+                    && let Ok(content) = fs::read_to_string(&path)
+                    && let Ok(book) = serde_json::from_str::<Lorebook>(&content)
+                {
+                    lorebooks.push(book);
                 }
             }
         }
@@ -642,12 +697,11 @@ impl StorageManager {
         }
         if let Ok(entries) = fs::read_dir(self.chats_dir()) {
             for entry in entries.flatten() {
-                if entry.path().extension().and_then(|s| s.to_str()) == Some("json") {
-                    if let Ok(content) = fs::read_to_string(entry.path()) {
-                        if let Ok(chat) = serde_json::from_str::<ChatTree>(&content) {
-                            let _ = doc.set_chat(&chat);
-                        }
-                    }
+                if entry.path().extension().and_then(|s| s.to_str()) == Some("json")
+                    && let Ok(content) = fs::read_to_string(entry.path())
+                    && let Ok(chat) = serde_json::from_str::<ChatTree>(&content)
+                {
+                    let _ = doc.set_chat(&chat);
                 }
             }
         }
@@ -678,14 +732,14 @@ impl StorageManager {
         if let Ok(characters) = doc.get_characters() {
             for c in characters {
                 let tomb_key = format!("character:{}", c.id);
-                if let Some(tomb) = tombstones.get(&tomb_key) {
-                    if tomb.deleted_at >= c.updated_at {
-                        let path = self.characters_dir().join(format!("{}.json", c.id));
-                        if path.exists() {
-                            let _ = fs::remove_file(path);
-                        }
-                        continue;
+                if let Some(tomb) = tombstones.get(&tomb_key)
+                    && tomb.deleted_at >= c.updated_at
+                {
+                    let path = self.characters_dir().join(format!("{}.json", c.id));
+                    if path.exists() {
+                        let _ = fs::remove_file(path);
                     }
+                    continue;
                 }
                 let should_write = match self.load_character(&c.id) {
                     Ok(existing) => c.updated_at > existing.updated_at,
@@ -705,14 +759,14 @@ impl StorageManager {
         if let Ok(chats) = doc.get_chats() {
             for chat in chats {
                 let tomb_key = format!("chat:{}", chat.id);
-                if let Some(tomb) = tombstones.get(&tomb_key) {
-                    if tomb.deleted_at >= chat.updated_at {
-                        let path = self.chats_dir().join(format!("{}.json", chat.id));
-                        if path.exists() {
-                            let _ = fs::remove_file(path);
-                        }
-                        continue;
+                if let Some(tomb) = tombstones.get(&tomb_key)
+                    && tomb.deleted_at >= chat.updated_at
+                {
+                    let path = self.chats_dir().join(format!("{}.json", chat.id));
+                    if path.exists() {
+                        let _ = fs::remove_file(path);
                     }
+                    continue;
                 }
                 let should_write = match self.load_chat(&chat.id.to_string()) {
                     Ok(existing) => chat.updated_at > existing.updated_at,
@@ -751,14 +805,14 @@ impl StorageManager {
         if let Ok(lorebooks) = doc.get_lorebooks() {
             for b in lorebooks {
                 let tomb_key = format!("lorebook:{}", b.id);
-                if let Some(tomb) = tombstones.get(&tomb_key) {
-                    if tomb.deleted_at >= b.updated_at {
-                        let path = self.lorebooks_dir().join(format!("{}.json", b.id));
-                        if path.exists() {
-                            let _ = fs::remove_file(path);
-                        }
-                        continue;
+                if let Some(tomb) = tombstones.get(&tomb_key)
+                    && tomb.deleted_at >= b.updated_at
+                {
+                    let path = self.lorebooks_dir().join(format!("{}.json", b.id));
+                    if path.exists() {
+                        let _ = fs::remove_file(path);
                     }
+                    continue;
                 }
                 let should_write = match self.load_lorebook(&b.id) {
                     Ok(existing) => b.updated_at > existing.updated_at,
@@ -778,14 +832,14 @@ impl StorageManager {
         if let Ok(groups) = doc.get_groups() {
             for g in groups {
                 let tomb_key = format!("group:{}", g.id);
-                if let Some(tomb) = tombstones.get(&tomb_key) {
-                    if tomb.deleted_at >= g.updated_at {
-                        let path = self.groups_dir().join(format!("{}.json", g.id));
-                        if path.exists() {
-                            let _ = fs::remove_file(path);
-                        }
-                        continue;
+                if let Some(tomb) = tombstones.get(&tomb_key)
+                    && tomb.deleted_at >= g.updated_at
+                {
+                    let path = self.groups_dir().join(format!("{}.json", g.id));
+                    if path.exists() {
+                        let _ = fs::remove_file(path);
                     }
+                    continue;
                 }
                 let should_write = match self.load_group(&g.id) {
                     Ok(existing) => g.updated_at > existing.updated_at,

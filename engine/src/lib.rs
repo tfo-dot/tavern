@@ -1,12 +1,14 @@
 pub mod character;
 pub mod chat;
 pub mod crdt;
+pub mod emotion;
 pub mod llm;
 pub mod lorebook;
 pub mod parser;
 pub mod prompt;
+pub mod rag;
+pub mod regex_engine;
 pub mod template;
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,7 +251,7 @@ mod tests {
 
     #[test]
     fn test_lorebook_recursive_scanning() {
-        use lorebook::{Lorebook, LorebookEntry, LorebookPosition, scan_lorebooks_for_activation};
+        use lorebook::{Lorebook, LorebookEntry, scan_lorebooks_for_activation};
 
         let mut book = Lorebook::new("Magic Lore".to_string(), "Lore".to_string());
         book.recursive_scanning = true;

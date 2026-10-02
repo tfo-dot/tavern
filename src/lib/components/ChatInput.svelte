@@ -1,21 +1,18 @@
 <script lang="ts">
-  import { tick } from 'svelte';
+  import { tick } from "svelte";
 
   export let isGenerating = false;
-  export let placeholder = 'Type a message...';
-  export let hasMessages = false;
-  export let lastMessageIsAssistant = false;
+  export let placeholder = "Type a message...";
 
   export let onSend: (text: string) => void;
   export let onStop: () => void;
-  export let onRegenerate: () => void;
-  export let onContinue: (() => void) | undefined = undefined;
+  export let onDraftChange: ((draft: string) => void) | undefined = undefined;
 
-  let text = '';
+  export let text = "";
   let textareaEl: HTMLTextAreaElement;
 
   function handleKeyDown(e: KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       submit();
     }
@@ -24,7 +21,7 @@
   function submit() {
     if (isGenerating) return;
     const toSend = text;
-    text = '';
+    text = "";
     adjustHeight();
     onSend(toSend);
   }
@@ -32,13 +29,16 @@
   async function adjustHeight() {
     await tick();
     if (textareaEl) {
-      textareaEl.style.height = 'auto';
-      textareaEl.style.height = Math.min(textareaEl.scrollHeight, 200) + 'px';
+      textareaEl.style.height = "auto";
+      textareaEl.style.height = Math.min(textareaEl.scrollHeight, 200) + "px";
     }
   }
 
   $: if (text !== undefined) {
     adjustHeight();
+    if (onDraftChange) {
+      onDraftChange(text);
+    }
   }
 </script>
 
@@ -59,29 +59,13 @@
           <span class="stop-icon">■</span> Stop
         </button>
       {:else}
-        {#if hasMessages && lastMessageIsAssistant && onContinue}
-          <button
-            class="secondary-btn continue-btn"
-            on:click={onContinue}
-            title="Continue latest AI message generation"
-          >
-            ▶ Continue
-          </button>
-        {/if}
-        {#if hasMessages}
-          <button
-            class="secondary-btn"
-            on:click={onRegenerate}
-            title="Swipe / Regenerate latest reply"
-          >
-            🔄 Swipe
-          </button>
-        {/if}
         <button
           class="send-btn"
           disabled={isGenerating}
           on:click={submit}
-          title={text.trim() ? 'Send message (Enter)' : 'Send without text / Trigger AI turn (Enter)'}
+          title={text.trim()
+            ? "Send message (Enter)"
+            : "Send without text / Trigger AI turn (Enter)"}
         >
           Send ➔
         </button>
@@ -89,7 +73,10 @@
     </div>
   </div>
   <div class="shortcuts-hint">
-    <span><strong>Enter</strong> to send (or generate next turn if empty) &bull; <strong>Shift+Enter</strong> for newline</span>
+    <span
+      ><strong>Enter</strong> to send (or generate next turn if empty) &bull;
+      <strong>Shift+Enter</strong> for newline</span
+    >
   </div>
 </div>
 
@@ -189,24 +176,13 @@
   }
 
   @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50% { opacity: 0.75; }
-  }
-
-  .secondary-btn {
-    background: #313244;
-    color: #cdd6f4;
-    border: 1px solid #45475a;
-    padding: 0.45rem 0.8rem;
-    border-radius: 8px;
-    font-size: 0.82rem;
-    font-weight: 600;
-    cursor: pointer;
-    transition: background 0.15s ease;
-  }
-
-  .secondary-btn:hover {
-    background: #45475a;
+    0%,
+    100% {
+      opacity: 1;
+    }
+    50% {
+      opacity: 0.75;
+    }
   }
 
   .shortcuts-hint {
@@ -217,27 +193,36 @@
   }
   @media (max-width: 640px) {
     .input-container {
-      padding: 0.5rem 0.6rem;
+      padding: 0.4rem 0.6rem;
       padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
     }
 
     .input-wrapper {
-      padding: 0.4rem 0.6rem;
+      padding: 0.45rem 0.6rem;
       gap: 0.4rem;
+      flex-direction: column;
+      align-items: stretch;
     }
 
     textarea {
-      font-size: 1rem;
+      font-size: 0.95rem;
+      width: 100%;
+    }
+
+    .buttons-row {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 0.35rem;
+      flex-wrap: wrap;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      padding-top: 0.35rem;
     }
 
     .send-btn,
     .stop-btn {
-      padding: 0.45rem 0.85rem;
-      font-size: 0.85rem;
-    }
-
-    .secondary-btn {
-      display: none;
+      padding: 0.35rem 0.85rem;
+      font-size: 0.82rem;
     }
 
     .shortcuts-hint {
