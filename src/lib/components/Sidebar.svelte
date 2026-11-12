@@ -35,13 +35,30 @@
 
   let selectedFolder: string = 'all';
   let selectedTag: string | null = null;
-  let isUrlImportOpen = false;
-  let urlToImport = '';
-  let isImportingUrl = false;
-  let urlImportError = '';
 
-  $: availableFolders = Array.from(new Set(characters.map((c) => c.folder).filter(Boolean))) as string[];
-  $: availableTags = Array.from(new Set(characters.flatMap((c) => c.card.data.tags || []))).filter(Boolean).sort();
+  $: ({ availableFolders, folderCounts, uncategorizedCount, availableTags } = (() => {
+    const counts: Record<string, number> = Object.create(null);
+    const tagMap: Record<string, true> = Object.create(null);
+    let uncategorized = 0;
+    for (const c of characters) {
+      if (c.folder) {
+        counts[c.folder] = (counts[c.folder] || 0) + 1;
+      } else {
+        uncategorized += 1;
+      }
+      if (c.card.data.tags) {
+        for (const t of c.card.data.tags) {
+          if (t) tagMap[t] = true;
+        }
+      }
+    }
+    return {
+      availableFolders: Object.keys(counts),
+      folderCounts: counts,
+      uncategorizedCount: uncategorized,
+      availableTags: Object.keys(tagMap).sort(),
+    };
+  })());
 
   $: filteredCharacters = characters.filter((c) => {
     if (selectedFolder !== 'all') {
@@ -232,15 +249,15 @@
                 class="folder-pill {selectedFolder === folder ? 'active' : ''}"
                 on:click={() => (selectedFolder = selectedFolder === folder ? 'all' : folder)}
               >
-                📁 {folder} ({characters.filter((c) => c.folder === folder).length})
+                📁 {folder} ({folderCounts[folder] || 0})
               </button>
             {/each}
-            {#if characters.some((c) => !c.folder)}
+            {#if uncategorizedCount > 0}
               <button
                 class="folder-pill {selectedFolder === 'uncategorized' ? 'active' : ''}"
                 on:click={() => (selectedFolder = selectedFolder === 'uncategorized' ? 'all' : 'uncategorized')}
               >
-                📁 Uncategorized ({characters.filter((c) => !c.folder).length})
+                📁 Uncategorized ({uncategorizedCount})
               </button>
             {/if}
           </div>
@@ -258,13 +275,6 @@
           </button>
           <button class="secondary-action-btn" on:click={triggerFileInput} title="Import PNG card or JSON">
             📥 Import
-          </button>
-          <button
-            class="secondary-action-btn url-import-toggle {isUrlImportOpen ? 'active' : ''}"
-            on:click={() => (isUrlImportOpen = !isUrlImportOpen)}
-            title="Import from Chub.ai or CharacterHub URL"
-          >
-            🌐 URL
           </button>
         </div>
       </div>
@@ -293,7 +303,7 @@
               on:keydown={(e) => e.key === 'Enter' && handleSelectChar(char.id)}
             >
               {#if char.avatar_data_url}
-                <img src={char.avatar_data_url} alt={char.card.data.name} class="char-avatar-img" />
+                <img src={char.avatar_data_url} alt={char.card.data.name} class="char-avatar-img" loading="lazy" decoding="async" />
               {:else}
                 <div class="char-avatar-placeholder">
                   {char.card.data.name.slice(0, 2).toUpperCase()}
@@ -385,7 +395,7 @@
               on:keydown={(e) => e.key === 'Enter' && handleSelectGroup(grp.id)}
             >
               {#if grp.avatar_data_url}
-                <img src={grp.avatar_data_url} alt={grp.name} class="char-avatar-img" />
+                <img src={grp.avatar_data_url} alt={grp.name} class="char-avatar-img" loading="lazy" decoding="async" />
               {:else}
                 <div class="char-avatar-placeholder">
                   👥
@@ -775,13 +785,6 @@
     background: rgba(203, 166, 247, 0.25);
     border-color: #cba6f7;
     font-weight: 700;
-  }
-
-  /* URL Import Box */
-  .url-import-toggle.active {
-    background: rgba(203, 166, 247, 0.2);
-    border-color: #cba6f7;
-    color: #cba6f7;
   }
 
   .folder-badge {

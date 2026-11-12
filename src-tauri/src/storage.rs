@@ -3,10 +3,15 @@ use engine::character::{Character, CharacterCardV2, UserPersona};
 use engine::chat::{ChatTree, Group, export_sillytavern_chat_jsonl, import_sillytavern_chat_jsonl};
 use engine::crdt::TavernCrdtDoc;
 use engine::lorebook::{Lorebook, parse_lorebook};
+use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 use uuid::Uuid;
 
 use crate::sync::protocol::SyncStats;
@@ -140,19 +145,68 @@ pub struct ChatSummary {
     pub group_id: Option<String>,
 }
 
+enum CrdtJob {
+    SetCharacter(Box<Character>),
+    DeleteCharacterAndChats { id: String, chat_ids: Vec<Uuid> },
+    SetChat(Box<ChatTree>),
+    DeleteChat(Uuid),
+    SetGroup(Box<Group>),
+    DeleteGroupAndChats { id: String, chat_ids: Vec<Uuid> },
+    SetPersona(Box<UserPersona>),
+    DeletePersona(String),
+    SetLorebook(Box<Lorebook>),
+    DeleteLorebook(String),
+    ReplaceSnapshot(Vec<u8>),
+    Run(Box<dyn FnOnce(&TavernCrdtDoc) + Send>),
+    RunMut(Box<dyn FnOnce(&TavernCrdtDoc) -> bool + Send>),
+    Flush(Sender<()>),
+    Shutdown,
+}
+
 pub struct StorageManager {
     base_dir: PathBuf,
+    chats_index: Mutex<Option<HashMap<String, ChatSummary>>>,
+    crdt_tx: Mutex<Option<Sender<CrdtJob>>>,
+    crdt_worker: Mutex<Option<JoinHandle<()>>>,
+}
+
+impl Drop for StorageManager {
+    fn drop(&mut self) {
+        if let Some(tx) = self.crdt_tx.lock().take() {
+            let _ = tx.send(CrdtJob::Shutdown);
+        }
+        if let Some(handle) = self.crdt_worker.lock().take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 impl StorageManager {
     pub fn new(base_dir: PathBuf) -> Self {
-        let mgr = Self { base_dir };
+        let (tx, rx) = mpsc::channel();
+        let worker_base = base_dir.clone();
+        let handle = thread::Builder::new()
+            .name("tavern-crdt-worker".to_string())
+            .spawn(move || Self::crdt_worker_loop(worker_base, rx))
+            .expect("Failed to spawn CRDT background worker");
+
+        let mgr = Self {
+            base_dir,
+            chats_index: Mutex::new(None),
+            crdt_tx: Mutex::new(Some(tx)),
+            crdt_worker: Mutex::new(Some(handle)),
+        };
         mgr.init_directories();
         mgr.ensure_starter_data();
         mgr.ensure_starter_persona();
         mgr
     }
 
+    fn send_crdt_job(&self, job: CrdtJob) {
+        if let Some(tx) = self.crdt_tx.lock().as_ref() {
+            let _ = tx.send(job);
+        }
+    }
     fn characters_dir(&self) -> PathBuf {
         self.base_dir.join("characters")
     }
@@ -243,68 +297,94 @@ impl StorageManager {
 
     pub fn save_character(&self, character: &Character) -> Result<(), String> {
         let path = self.characters_dir().join(format!("{}.json", character.id));
-        let data = serde_json::to_string_pretty(character).map_err(|e| e.to_string())?;
+        let data = serde_json::to_vec(character).map_err(|e| e.to_string())?;
         fs::write(path, data).map_err(|e| e.to_string())?;
-        if let Ok(doc) = self.load_crdt_doc() {
-            let _ = doc.set_character(character);
-            let _ = self.save_crdt_doc(&doc);
-        }
+        self.send_crdt_job(CrdtJob::SetCharacter(Box::new(character.clone())));
         Ok(())
     }
 
     pub fn load_character(&self, id: &str) -> Result<Character, String> {
         let path = self.characters_dir().join(format!("{id}.json"));
-        let mut file = File::open(path).map_err(|e| e.to_string())?;
-        let mut content = String::new();
-        file.read_to_string(&mut content)
-            .map_err(|e| e.to_string())?;
-        serde_json::from_str(&content).map_err(|e| e.to_string())
+        let bytes = fs::read(path).map_err(|e| e.to_string())?;
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())
     }
 
     pub fn list_characters(&self) -> Result<Vec<Character>, String> {
-        let mut characters = Vec::new();
-        if let Ok(entries) = fs::read_dir(self.characters_dir()) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json")
-                    && let Ok(content) = fs::read_to_string(&path)
-                    && let Ok(character) = serde_json::from_str::<Character>(&content)
-                {
-                    characters.push(character);
-                }
-            }
-        }
+        let mut characters = load_json_dir_parallel::<Character>(&self.characters_dir());
         characters.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(characters)
     }
 
     pub fn delete_character(&self, id: &str) -> Result<(), String> {
         let path = self.characters_dir().join(format!("{id}.json"));
-        if path.exists() {
-            fs::remove_file(path).map_err(|e| e.to_string())?;
+        if let Err(e) = fs::remove_file(&path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(e.to_string());
         }
-        if let Ok(doc) = self.load_crdt_doc() {
-            let _ = doc.delete_character(id);
-            let _ = self.save_crdt_doc(&doc);
-        }
-        if let Ok(chats) = self.list_chats_for_character(id) {
-            for chat in chats {
-                let _ = self.delete_chat(&chat.id);
+
+        let matching_chats: Vec<(String, Option<Uuid>)> = {
+            let mut guard = self.chats_index.lock();
+            let index = self.ensure_chats_index(&mut guard);
+            let keys: Vec<String> = index
+                .iter()
+                .filter(|(_, s)| s.character_id == id)
+                .map(|(k, _)| k.clone())
+                .collect();
+            keys.into_iter()
+                .map(|k| {
+                    index.remove(&k);
+                    let uuid_opt = Uuid::parse_str(&k).ok();
+                    (k, uuid_opt)
+                })
+                .collect()
+        };
+
+        let mut chat_uuids = Vec::with_capacity(matching_chats.len());
+        for (chat_id, uuid_opt) in matching_chats {
+            let chat_path = self.chats_dir().join(format!("{chat_id}.json"));
+            let _ = fs::remove_file(chat_path);
+            if let Some(u) = uuid_opt {
+                chat_uuids.push(u);
             }
         }
+
+        self.send_crdt_job(CrdtJob::DeleteCharacterAndChats {
+            id: id.to_string(),
+            chat_ids: chat_uuids,
+        });
         Ok(())
     }
 
     // --- Chats ---
 
+    fn ensure_chats_index<'a>(
+        &self,
+        guard: &'a mut Option<HashMap<String, ChatSummary>>,
+    ) -> &'a mut HashMap<String, ChatSummary> {
+        guard.get_or_insert_with(|| {
+            let chats = load_json_dir_parallel::<ChatTree>(&self.chats_dir());
+            let mut map = HashMap::with_capacity(chats.len());
+            for chat in chats {
+                let summary = chat_to_summary(&chat);
+                map.insert(summary.id.clone(), summary);
+            }
+            map
+        })
+    }
+
     pub fn save_chat(&self, chat: &ChatTree) -> Result<(), String> {
         let path = self.chats_dir().join(format!("{}.json", chat.id));
-        let data = serde_json::to_string_pretty(chat).map_err(|e| e.to_string())?;
+        let data = serde_json::to_vec(chat).map_err(|e| e.to_string())?;
         fs::write(path, data).map_err(|e| e.to_string())?;
-        if let Ok(doc) = self.load_crdt_doc() {
-            let _ = doc.set_chat(chat);
-            let _ = self.save_crdt_doc(&doc);
+        {
+            let mut guard = self.chats_index.lock();
+            if let Some(index) = guard.as_mut() {
+                let summary = chat_to_summary(chat);
+                index.insert(summary.id.clone(), summary);
+            }
         }
+        self.send_crdt_job(CrdtJob::SetChat(Box::new(chat.clone())));
         Ok(())
     }
 
@@ -318,89 +398,29 @@ impl StorageManager {
     }
 
     pub fn list_chats_for_character(&self, character_id: &str) -> Result<Vec<ChatSummary>, String> {
-        let mut summaries = Vec::new();
-        if let Ok(entries) = fs::read_dir(self.chats_dir()) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json")
-                    && let Ok(content) = fs::read_to_string(&path)
-                    && let Ok(chat) = serde_json::from_str::<ChatTree>(&content)
-                    && chat.character_id == character_id
-                {
-                    let (msg_count, preview) = {
-                        let active_path = chat.get_active_path();
-                        let count = active_path.len();
-                        let prev = active_path
-                            .last()
-                            .map(|m| {
-                                let c = m.content.chars().take(80).collect::<String>();
-                                if m.content.chars().count() > 80 {
-                                    format!("{c}...")
-                                } else {
-                                    c
-                                }
-                            })
-                            .unwrap_or_else(|| "Empty chat".to_string());
-                        (count, prev)
-                    };
-
-                    summaries.push(ChatSummary {
-                        id: chat.id.to_string(),
-                        character_id: chat.character_id,
-                        title: chat.title,
-                        created_at: chat.created_at,
-                        updated_at: chat.updated_at,
-                        message_count: msg_count,
-                        last_message_preview: preview,
-                        group_id: chat.group_id,
-                    });
-                }
-            }
-        }
+        let mut summaries: Vec<ChatSummary> = {
+            let mut guard = self.chats_index.lock();
+            let index = self.ensure_chats_index(&mut guard);
+            index
+                .values()
+                .filter(|s| s.character_id == character_id)
+                .cloned()
+                .collect()
+        };
         summaries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(summaries)
     }
 
     pub fn list_chats_for_group(&self, group_id: &str) -> Result<Vec<ChatSummary>, String> {
-        let mut summaries = Vec::new();
-        if let Ok(entries) = fs::read_dir(self.chats_dir()) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("json")
-                    && let Ok(content) = fs::read_to_string(&path)
-                    && let Ok(chat) = serde_json::from_str::<ChatTree>(&content)
-                    && chat.group_id.as_deref() == Some(group_id)
-                {
-                    let (msg_count, preview) = {
-                        let active_path = chat.get_active_path();
-                        let count = active_path.len();
-                        let prev = active_path
-                            .last()
-                            .map(|m| {
-                                let c = m.content.chars().take(80).collect::<String>();
-                                if m.content.chars().count() > 80 {
-                                    format!("{c}...")
-                                } else {
-                                    c
-                                }
-                            })
-                            .unwrap_or_else(|| "Empty chat".to_string());
-                        (count, prev)
-                    };
-
-                    summaries.push(ChatSummary {
-                        id: chat.id.to_string(),
-                        character_id: chat.character_id,
-                        title: chat.title,
-                        created_at: chat.created_at,
-                        updated_at: chat.updated_at,
-                        message_count: msg_count,
-                        last_message_preview: preview,
-                        group_id: chat.group_id,
-                    });
-                }
-            }
-        }
+        let mut summaries: Vec<ChatSummary> = {
+            let mut guard = self.chats_index.lock();
+            let index = self.ensure_chats_index(&mut guard);
+            index
+                .values()
+                .filter(|s| s.group_id.as_deref() == Some(group_id))
+                .cloned()
+                .collect()
+        };
         summaries.sort_by_key(|b| std::cmp::Reverse(b.updated_at));
         Ok(summaries)
     }
@@ -409,12 +429,9 @@ impl StorageManager {
 
     pub fn save_group(&self, group: &Group) -> Result<(), String> {
         let path = self.groups_dir().join(format!("{}.json", group.id));
-        let data = serde_json::to_string_pretty(group).map_err(|e| e.to_string())?;
+        let data = serde_json::to_vec(group).map_err(|e| e.to_string())?;
         fs::write(path, data).map_err(|e| e.to_string())?;
-        if let Ok(doc) = self.load_crdt_doc() {
-            let _ = doc.set_group(group);
-            let _ = self.save_crdt_doc(&doc);
-        }
+        self.send_crdt_job(CrdtJob::SetGroup(Box::new(group.clone())));
         Ok(())
     }
 
@@ -446,31 +463,60 @@ impl StorageManager {
 
     pub fn delete_group(&self, id: &str) -> Result<(), String> {
         let path = self.groups_dir().join(format!("{id}.json"));
-        if path.exists() {
-            fs::remove_file(path).map_err(|e| e.to_string())?;
+        if let Err(e) = fs::remove_file(&path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(e.to_string());
         }
-        if let Ok(doc) = self.load_crdt_doc() {
-            let _ = doc.delete_group(id);
-            let _ = self.save_crdt_doc(&doc);
-        }
-        if let Ok(chats) = self.list_chats_for_group(id) {
-            for chat in chats {
-                let _ = self.delete_chat(&chat.id);
+
+        let matching_chats: Vec<(String, Option<Uuid>)> = {
+            let mut guard = self.chats_index.lock();
+            let index = self.ensure_chats_index(&mut guard);
+            let keys: Vec<String> = index
+                .iter()
+                .filter(|(_, s)| s.group_id.as_deref() == Some(id))
+                .map(|(k, _)| k.clone())
+                .collect();
+            keys.into_iter()
+                .map(|k| {
+                    index.remove(&k);
+                    let uuid_opt = Uuid::parse_str(&k).ok();
+                    (k, uuid_opt)
+                })
+                .collect()
+        };
+
+        let mut chat_uuids = Vec::with_capacity(matching_chats.len());
+        for (chat_id, uuid_opt) in matching_chats {
+            let chat_path = self.chats_dir().join(format!("{chat_id}.json"));
+            let _ = fs::remove_file(chat_path);
+            if let Some(u) = uuid_opt {
+                chat_uuids.push(u);
             }
         }
+
+        self.send_crdt_job(CrdtJob::DeleteGroupAndChats {
+            id: id.to_string(),
+            chat_ids: chat_uuids,
+        });
         Ok(())
     }
 
     pub fn delete_chat(&self, id: &str) -> Result<(), String> {
         let path = self.chats_dir().join(format!("{id}.json"));
-        if path.exists() {
-            fs::remove_file(path).map_err(|e| e.to_string())?;
-        }
-        if let Ok(doc) = self.load_crdt_doc()
-            && let Ok(uuid_val) = Uuid::parse_str(id)
+        if let Err(e) = fs::remove_file(&path)
+            && e.kind() != std::io::ErrorKind::NotFound
         {
-            let _ = doc.delete_chat(&uuid_val);
-            let _ = self.save_crdt_doc(&doc);
+            return Err(e.to_string());
+        }
+        {
+            let mut guard = self.chats_index.lock();
+            if let Some(index) = guard.as_mut() {
+                index.remove(id);
+            }
+        }
+        if let Ok(uuid_val) = Uuid::parse_str(id) {
+            self.send_crdt_job(CrdtJob::DeleteChat(uuid_val));
         }
         Ok(())
     }
@@ -552,12 +598,9 @@ impl StorageManager {
 
     pub fn save_user_persona(&self, persona: &UserPersona) -> Result<(), String> {
         let path = self.personas_dir().join(format!("{}.json", persona.id));
-        let data = serde_json::to_string_pretty(persona).map_err(|e| e.to_string())?;
+        let data = serde_json::to_vec(persona).map_err(|e| e.to_string())?;
         fs::write(path, data).map_err(|e| e.to_string())?;
-        if let Ok(doc) = self.load_crdt_doc() {
-            let _ = doc.set_persona(persona);
-            let _ = self.save_crdt_doc(&doc);
-        }
+        self.send_crdt_job(CrdtJob::SetPersona(Box::new(persona.clone())));
         Ok(())
     }
 
@@ -593,13 +636,12 @@ impl StorageManager {
 
     pub fn delete_user_persona(&self, id: &str) -> Result<(), String> {
         let path = self.personas_dir().join(format!("{id}.json"));
-        if path.exists() {
-            fs::remove_file(path).map_err(|e| e.to_string())?;
+        if let Err(e) = fs::remove_file(&path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(e.to_string());
         }
-        if let Ok(doc) = self.load_crdt_doc() {
-            let _ = doc.delete_persona(id);
-            let _ = self.save_crdt_doc(&doc);
-        }
+        self.send_crdt_job(CrdtJob::DeletePersona(id.to_string()));
         Ok(())
     }
 
@@ -607,15 +649,11 @@ impl StorageManager {
 
     pub fn save_lorebook(&self, lorebook: &Lorebook) -> Result<(), String> {
         let path = self.lorebooks_dir().join(format!("{}.json", lorebook.id));
-        let data = serde_json::to_string_pretty(lorebook).map_err(|e| e.to_string())?;
+        let data = serde_json::to_vec(lorebook).map_err(|e| e.to_string())?;
         fs::write(path, data).map_err(|e| e.to_string())?;
-        if let Ok(doc) = self.load_crdt_doc() {
-            let _ = doc.set_lorebook(lorebook);
-            let _ = self.save_crdt_doc(&doc);
-        }
+        self.send_crdt_job(CrdtJob::SetLorebook(Box::new(lorebook.clone())));
         Ok(())
     }
-
     pub fn load_lorebook(&self, id: &str) -> Result<Lorebook, String> {
         let path = self.lorebooks_dir().join(format!("{id}.json"));
         let mut file = File::open(path).map_err(|e| e.to_string())?;
@@ -644,13 +682,12 @@ impl StorageManager {
 
     pub fn delete_lorebook(&self, id: &str) -> Result<(), String> {
         let path = self.lorebooks_dir().join(format!("{id}.json"));
-        if path.exists() {
-            fs::remove_file(path).map_err(|e| e.to_string())?;
+        if let Err(e) = fs::remove_file(&path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(e.to_string());
         }
-        if let Ok(doc) = self.load_crdt_doc() {
-            let _ = doc.delete_lorebook(id);
-            let _ = self.save_crdt_doc(&doc);
-        }
+        self.send_crdt_job(CrdtJob::DeleteLorebook(id.to_string()));
         Ok(())
     }
 
@@ -671,56 +708,226 @@ impl StorageManager {
         self.base_dir.join("crdt_doc.bin")
     }
 
+    pub fn flush_crdt(&self) {
+        let (tx, rx) = mpsc::channel();
+        self.send_crdt_job(CrdtJob::Flush(tx));
+        let _ = rx.recv();
+    }
+
+    pub fn with_crdt_doc<F, R>(&self, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&TavernCrdtDoc) -> Result<R, String> + Send + 'static,
+        R: Send + 'static,
+    {
+        let (res_tx, res_rx) = mpsc::channel();
+        self.send_crdt_job(CrdtJob::Run(Box::new(move |doc| {
+            let _ = res_tx.send(f(doc));
+        })));
+        res_rx
+            .recv()
+            .map_err(|_| "CRDT worker unavailable".to_string())?
+    }
+
+    pub fn with_crdt_doc_mut<F, R>(&self, f: F) -> Result<R, String>
+    where
+        F: FnOnce(&TavernCrdtDoc) -> Result<(R, bool), String> + Send + 'static,
+        R: Send + 'static,
+    {
+        let (res_tx, res_rx) = mpsc::channel();
+        self.send_crdt_job(CrdtJob::RunMut(Box::new(move |doc| match f(doc) {
+            Ok((val, dirty)) => {
+                let _ = res_tx.send(Ok(val));
+                dirty
+            }
+            Err(e) => {
+                let _ = res_tx.send(Err(e));
+                false
+            }
+        })));
+        res_rx
+            .recv()
+            .map_err(|_| "CRDT worker unavailable".to_string())?
+    }
+
     pub fn load_crdt_doc(&self) -> Result<TavernCrdtDoc, String> {
-        let path = self.crdt_doc_path();
-        if path.exists() {
-            let bytes = fs::read(&path).map_err(|e| e.to_string())?;
-            TavernCrdtDoc::from_snapshot(&bytes)
-        } else {
-            let doc = TavernCrdtDoc::new();
-            self.populate_crdt_from_disk(&doc)?;
-            let _ = self.save_crdt_doc(&doc);
-            Ok(doc)
-        }
+        self.with_crdt_doc(|_| Ok(()))?;
+        self.flush_crdt();
+        let bytes = fs::read(self.crdt_doc_path()).map_err(|e| e.to_string())?;
+        TavernCrdtDoc::from_snapshot(&bytes)
     }
 
     pub fn save_crdt_doc(&self, doc: &TavernCrdtDoc) -> Result<(), String> {
         let bytes = doc.export_snapshot()?;
-        fs::write(self.crdt_doc_path(), bytes).map_err(|e| e.to_string())
+        save_crdt_bytes_atomic(&self.crdt_doc_path(), &bytes)?;
+        self.send_crdt_job(CrdtJob::ReplaceSnapshot(bytes));
+        self.flush_crdt();
+        Ok(())
     }
 
-    pub fn populate_crdt_from_disk(&self, doc: &TavernCrdtDoc) -> Result<(), String> {
-        if let Ok(characters) = self.list_characters() {
-            for c in characters {
-                let _ = doc.set_character(&c);
+    fn crdt_worker_loop(base_dir: PathBuf, rx: mpsc::Receiver<CrdtJob>) {
+        let crdt_path = base_dir.join("crdt_doc.bin");
+        let mut doc_opt: Option<TavernCrdtDoc> = None;
+        let mut dirty = false;
+
+        loop {
+            let first_job = if dirty {
+                match rx.recv_timeout(Duration::from_millis(75)) {
+                    Ok(j) => j,
+                    Err(RecvTimeoutError::Timeout) => {
+                        if let Some(doc) = doc_opt.as_ref() {
+                            let _ = save_crdt_snapshot_atomic(&crdt_path, doc);
+                        }
+                        dirty = false;
+                        continue;
+                    }
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            } else {
+                match rx.recv() {
+                    Ok(j) => j,
+                    Err(_) => break,
+                }
+            };
+
+            let mut should_shutdown = false;
+            let mut flush_waiters: Vec<Sender<()>> = Vec::new();
+
+            let mut process = |job: CrdtJob| match job {
+                CrdtJob::SetCharacter(c) => {
+                    if let Some(doc) = ensure_crdt_doc(&base_dir, &crdt_path, &mut doc_opt)
+                        && doc.set_character(&c).is_ok()
+                    {
+                        dirty = true;
+                    }
+                }
+                CrdtJob::DeleteCharacterAndChats { id, chat_ids } => {
+                    if let Some(doc) = ensure_crdt_doc(&base_dir, &crdt_path, &mut doc_opt) {
+                        let _ = doc.delete_character(&id);
+                        for chat_id in &chat_ids {
+                            let _ = doc.delete_chat(chat_id);
+                        }
+                        dirty = true;
+                    }
+                }
+                CrdtJob::SetChat(chat) => {
+                    if let Some(doc) = ensure_crdt_doc(&base_dir, &crdt_path, &mut doc_opt)
+                        && doc.set_chat(&chat).is_ok()
+                    {
+                        dirty = true;
+                    }
+                }
+                CrdtJob::DeleteChat(uuid_val) => {
+                    if let Some(doc) = ensure_crdt_doc(&base_dir, &crdt_path, &mut doc_opt)
+                        && doc.delete_chat(&uuid_val).is_ok()
+                    {
+                        dirty = true;
+                    }
+                }
+                CrdtJob::SetGroup(g) => {
+                    if let Some(doc) = ensure_crdt_doc(&base_dir, &crdt_path, &mut doc_opt)
+                        && doc.set_group(&g).is_ok()
+                    {
+                        dirty = true;
+                    }
+                }
+                CrdtJob::DeleteGroupAndChats { id, chat_ids } => {
+                    if let Some(doc) = ensure_crdt_doc(&base_dir, &crdt_path, &mut doc_opt) {
+                        let _ = doc.delete_group(&id);
+                        for chat_id in &chat_ids {
+                            let _ = doc.delete_chat(chat_id);
+                        }
+                        dirty = true;
+                    }
+                }
+                CrdtJob::SetPersona(p) => {
+                    if let Some(doc) = ensure_crdt_doc(&base_dir, &crdt_path, &mut doc_opt)
+                        && doc.set_persona(&p).is_ok()
+                    {
+                        dirty = true;
+                    }
+                }
+                CrdtJob::DeletePersona(id) => {
+                    if let Some(doc) = ensure_crdt_doc(&base_dir, &crdt_path, &mut doc_opt)
+                        && doc.delete_persona(&id).is_ok()
+                    {
+                        dirty = true;
+                    }
+                }
+                CrdtJob::SetLorebook(b) => {
+                    if let Some(doc) = ensure_crdt_doc(&base_dir, &crdt_path, &mut doc_opt)
+                        && doc.set_lorebook(&b).is_ok()
+                    {
+                        dirty = true;
+                    }
+                }
+                CrdtJob::DeleteLorebook(id) => {
+                    if let Some(doc) = ensure_crdt_doc(&base_dir, &crdt_path, &mut doc_opt)
+                        && doc.delete_lorebook(&id).is_ok()
+                    {
+                        dirty = true;
+                    }
+                }
+                CrdtJob::ReplaceSnapshot(bytes) => {
+                    if let Ok(new_doc) = TavernCrdtDoc::from_snapshot(&bytes) {
+                        doc_opt = Some(new_doc);
+                        dirty = false;
+                    }
+                }
+                CrdtJob::Run(f) => {
+                    if let Some(doc) = ensure_crdt_doc(&base_dir, &crdt_path, &mut doc_opt) {
+                        f(doc);
+                    } else {
+                        let fallback = TavernCrdtDoc::new();
+                        f(&fallback);
+                    }
+                }
+                CrdtJob::RunMut(f) => {
+                    if let Some(doc) = ensure_crdt_doc(&base_dir, &crdt_path, &mut doc_opt) {
+                        if f(doc) || dirty {
+                            let _ = save_crdt_snapshot_atomic(&crdt_path, doc);
+                            dirty = false;
+                        }
+                    } else {
+                        let fallback = TavernCrdtDoc::new();
+                        if f(&fallback) {
+                            let _ = save_crdt_snapshot_atomic(&crdt_path, &fallback);
+                        }
+                        doc_opt = Some(fallback);
+                        dirty = false;
+                    }
+                }
+                CrdtJob::Flush(tx) => {
+                    flush_waiters.push(tx);
+                }
+                CrdtJob::Shutdown => {
+                    should_shutdown = true;
+                }
+            };
+
+            process(first_job);
+            while let Ok(next_job) = rx.try_recv() {
+                process(next_job);
             }
-        }
-        if let Ok(entries) = fs::read_dir(self.chats_dir()) {
-            for entry in entries.flatten() {
-                if entry.path().extension().and_then(|s| s.to_str()) == Some("json")
-                    && let Ok(content) = fs::read_to_string(entry.path())
-                    && let Ok(chat) = serde_json::from_str::<ChatTree>(&content)
+
+            if should_shutdown || !flush_waiters.is_empty() {
+                if dirty
+                    && let Some(doc) = doc_opt.as_ref()
                 {
-                    let _ = doc.set_chat(&chat);
+                    let _ = save_crdt_snapshot_atomic(&crdt_path, doc);
+                    dirty = false;
+                }
+                for tx in flush_waiters {
+                    let _ = tx.send(());
+                }
+                if should_shutdown {
+                    break;
                 }
             }
         }
-        if let Ok(personas) = self.list_user_personas() {
-            for p in personas {
-                let _ = doc.set_persona(&p);
-            }
-        }
-        if let Ok(lorebooks) = self.list_lorebooks() {
-            for b in lorebooks {
-                let _ = doc.set_lorebook(&b);
-            }
-        }
-        if let Ok(groups) = self.list_groups() {
-            for g in groups {
-                let _ = doc.set_group(&g);
-            }
-        }
-        doc.commit();
+    }
+
+    pub fn populate_crdt_from_disk(&self, doc: &TavernCrdtDoc) -> Result<(), String> {
+        populate_crdt_from_disk_dir(&self.base_dir, doc);
         Ok(())
     }
 
@@ -884,6 +1091,7 @@ impl StorageManager {
             }
         }
 
+        *self.chats_index.lock() = None;
         stats.message = format!(
             "Synced {} characters, {} chats, {} personas, {} lorebooks",
             stats.characters_synced,
@@ -892,5 +1100,214 @@ impl StorageManager {
             stats.lorebooks_synced
         );
         Ok(stats)
+    }
+}
+
+fn chat_to_summary(chat: &ChatTree) -> ChatSummary {
+    let active_path = chat.get_active_path();
+    let count = active_path.len();
+    let preview = active_path
+        .last()
+        .map(|m| {
+            let c = m.content.chars().take(80).collect::<String>();
+            if m.content.chars().nth(80).is_some() {
+                format!("{c}...")
+            } else {
+                c
+            }
+        })
+        .unwrap_or_else(|| "Empty chat".to_string());
+
+    ChatSummary {
+        id: chat.id.to_string(),
+        character_id: chat.character_id.clone(),
+        title: chat.title.clone(),
+        created_at: chat.created_at,
+        updated_at: chat.updated_at,
+        message_count: count,
+        last_message_preview: preview,
+        group_id: chat.group_id.clone(),
+    }
+}
+
+fn load_json_dir_parallel<T>(dir: &Path) -> Vec<T>
+where
+    T: for<'de> Deserialize<'de> + Send,
+{
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+        .collect();
+
+    if paths.is_empty() {
+        return Vec::new();
+    }
+    if paths.len() == 1 {
+        return fs::read(&paths[0])
+            .ok()
+            .and_then(|b| serde_json::from_slice::<T>(&b).ok())
+            .into_iter()
+            .collect();
+    }
+
+    let workers = thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .min(paths.len())
+        .max(1);
+    let chunk_size = paths.len().div_ceil(workers);
+
+    let mut out = Vec::with_capacity(paths.len());
+    thread::scope(|s| {
+        let mut handles = Vec::with_capacity(workers);
+        for chunk in paths.chunks(chunk_size) {
+            handles.push(s.spawn(move || {
+                let mut local = Vec::with_capacity(chunk.len());
+                for path in chunk {
+                    if let Ok(bytes) = fs::read(path)
+                        && let Ok(item) = serde_json::from_slice::<T>(&bytes)
+                    {
+                        local.push(item);
+                    }
+                }
+                local
+            }));
+        }
+        for h in handles {
+            if let Ok(mut local) = h.join() {
+                out.append(&mut local);
+            }
+        }
+    });
+    out
+}
+
+fn ensure_crdt_doc<'a>(
+    base_dir: &Path,
+    crdt_path: &Path,
+    doc_opt: &'a mut Option<TavernCrdtDoc>,
+) -> Option<&'a TavernCrdtDoc> {
+    if doc_opt.is_none() {
+        let doc = if crdt_path.exists() {
+            match fs::read(crdt_path)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| TavernCrdtDoc::from_snapshot(&bytes))
+            {
+                Ok(d) => d,
+                Err(_) => {
+                    let d = TavernCrdtDoc::new();
+                    populate_crdt_from_disk_dir(base_dir, &d);
+                    let _ = save_crdt_snapshot_atomic(crdt_path, &d);
+                    d
+                }
+            }
+        } else {
+            let d = TavernCrdtDoc::new();
+            populate_crdt_from_disk_dir(base_dir, &d);
+            let _ = save_crdt_snapshot_atomic(crdt_path, &d);
+            d
+        };
+        *doc_opt = Some(doc);
+    }
+    doc_opt.as_ref()
+}
+
+fn save_crdt_bytes_atomic(crdt_path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let tmp_path = crdt_path.with_extension("bin.tmp");
+    if fs::write(&tmp_path, bytes).is_ok() && fs::rename(&tmp_path, crdt_path).is_ok() {
+        return Ok(());
+    }
+    let _ = fs::remove_file(&tmp_path);
+    fs::write(crdt_path, bytes).map_err(|e| e.to_string())
+}
+
+fn save_crdt_snapshot_atomic(crdt_path: &Path, doc: &TavernCrdtDoc) -> Result<(), String> {
+    let bytes = doc.export_snapshot()?;
+    save_crdt_bytes_atomic(crdt_path, &bytes)
+}
+
+fn populate_crdt_from_disk_dir(base_dir: &Path, doc: &TavernCrdtDoc) {
+    for c in load_json_dir_parallel::<Character>(&base_dir.join("characters")) {
+        let _ = doc.set_character(&c);
+    }
+    for chat in load_json_dir_parallel::<ChatTree>(&base_dir.join("chats")) {
+        let _ = doc.set_chat(&chat);
+    }
+    for p in load_json_dir_parallel::<UserPersona>(&base_dir.join("personas")) {
+        let _ = doc.set_persona(&p);
+    }
+    for b in load_json_dir_parallel::<Lorebook>(&base_dir.join("lorebooks")) {
+        let _ = doc.set_lorebook(&b);
+    }
+    for g in load_json_dir_parallel::<Group>(&base_dir.join("groups")) {
+        let _ = doc.set_group(&g);
+    }
+    doc.commit();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use engine::chat::AuthorRole;
+
+    fn temp_storage_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("tavern_test_{}_{}", name, Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_character_and_chat_index_delete_and_crdt_consistency() {
+        let dir = temp_storage_dir("char_del");
+        {
+            let storage = StorageManager::new(dir.clone());
+
+            let c1 = Character::new("Alice".into(), "Hello!".into(), None);
+            let c2 = Character::new("Bob".into(), "Hi there!".into(), None);
+            storage.save_character(&c1).unwrap();
+            storage.save_character(&c2).unwrap();
+
+            let mut chat1 = ChatTree::new(c1.id.clone(), "Alice Chat 1".into());
+            chat1.append_message(AuthorRole::User, "Hey Alice".into(), None);
+            let mut chat2 = ChatTree::new(c1.id.clone(), "Alice Chat 2".into());
+            chat2.append_message(AuthorRole::User, "Another chat".into(), None);
+            let mut chat_bob = ChatTree::new(c2.id.clone(), "Bob Chat".into());
+            chat_bob.append_message(AuthorRole::User, "Hey Bob".into(), None);
+
+            storage.save_chat(&chat1).unwrap();
+            storage.save_chat(&chat2).unwrap();
+            storage.save_chat(&chat_bob).unwrap();
+
+            assert_eq!(storage.list_chats_for_character(&c1.id).unwrap().len(), 2);
+            assert_eq!(storage.list_chats_for_character(&c2.id).unwrap().len(), 1);
+
+            // Delete Alice -> should delete Alice and both of Alice's chats, leaving Bob untouched
+            storage.delete_character(&c1.id).unwrap();
+
+            assert!(storage.load_character(&c1.id).is_err());
+            assert!(storage.load_character(&c2.id).is_ok());
+            assert_eq!(storage.list_chats_for_character(&c1.id).unwrap().len(), 0);
+            assert_eq!(storage.list_chats_for_character(&c2.id).unwrap().len(), 1);
+            assert!(storage.load_chat(&chat1.id.to_string()).is_err());
+            assert!(storage.load_chat(&chat2.id.to_string()).is_err());
+            assert!(storage.load_chat(&chat_bob.id.to_string()).is_ok());
+
+            storage.flush_crdt();
+            let crdt = storage.load_crdt_doc().unwrap();
+            let tombstones = crdt.get_tombstones().unwrap();
+            assert!(tombstones.contains_key(&format!("character:{}", c1.id)));
+            assert!(tombstones.contains_key(&format!("chat:{}", chat1.id)));
+            assert!(tombstones.contains_key(&format!("chat:{}", chat2.id)));
+            assert!(!tombstones.contains_key(&format!("character:{}", c2.id)));
+
+            let crdt_chars = crdt.get_characters().unwrap();
+            assert!(crdt_chars.iter().any(|c| c.id == c2.id));
+            assert!(!crdt_chars.iter().any(|c| c.id == c1.id));
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 }

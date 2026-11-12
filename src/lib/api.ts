@@ -32,8 +32,8 @@ export async function deleteCharacter(id: string): Promise<void> {
 }
 
 export async function importCharacterCard(fileBytes: number[] | Uint8Array): Promise<Character> {
-  const bytesArray = Array.from(fileBytes);
-  return await invoke<Character>('import_character_card', { fileBytes: bytesArray });
+  const payload = fileBytes instanceof Uint8Array ? fileBytes : new Uint8Array(fileBytes);
+  return await invoke<Character>('import_character_card', payload);
 }
 
 export async function exportCardPng(characterId: string): Promise<number[]> {

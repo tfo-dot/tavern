@@ -425,8 +425,10 @@
 
   async function handleSaveCharacter(charToSave: Character) {
     const saved = await saveCharacter(charToSave);
-    await refreshCharacters();
+    const withoutSaved = characters.filter((c) => c.id !== saved.id);
+    characters = [saved, ...withoutSaved];
     activeCharacter = saved;
+    activeGroup = null;
     await refreshChats(saved.id);
     if (chats.length === 0) {
       await handleNewChat(saved.id);
@@ -435,7 +437,7 @@
 
   async function handleDeleteCharacter(id: string) {
     await deleteCharacter(id);
-    await refreshCharacters();
+    characters = characters.filter((c) => c.id !== id);
     if (activeCharacter?.id === id) {
       activeCharacter = characters.length > 0 ? characters[0] : null;
       if (activeCharacter) {
@@ -446,6 +448,8 @@
         messages = [];
         chats = [];
         activeChatId = null;
+        activeChatTree = null;
+        contextBreakdown = null;
       }
     }
   }
@@ -455,8 +459,11 @@
       const buffer = await file.arrayBuffer();
       const bytes = new Uint8Array(buffer);
       const imported = await importCharacterCard(bytes);
-      await refreshCharacters();
-      await handleSelectCharacter(imported.id);
+      characters = [imported, ...characters];
+      activeCharacter = imported;
+      activeGroup = null;
+      chats = [];
+      await handleNewChat(imported.id);
     } catch (e) {
       alert(`Import failed: ${e}`);
     }

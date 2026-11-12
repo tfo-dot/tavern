@@ -115,8 +115,12 @@ fn parse_png_card(bytes: &[u8]) -> Result<(CharacterCardV2, Option<String>), Car
         serde_json::from_str::<CharacterCardV2>(&json_str)?
     };
 
-    // Format avatar data url from PNG bytes
-    let avatar_data_url = format!("data:image/png;base64,{}", BASE64.encode(bytes));
+    // Format avatar data url from PNG bytes with a single allocation
+    let prefix = "data:image/png;base64,";
+    let encoded_len = base64::encoded_len(bytes.len(), true).unwrap_or(0);
+    let mut avatar_data_url = String::with_capacity(prefix.len() + encoded_len);
+    avatar_data_url.push_str(prefix);
+    BASE64.encode_string(bytes, &mut avatar_data_url);
 
     Ok((card, Some(avatar_data_url)))
 }

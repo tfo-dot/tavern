@@ -105,16 +105,17 @@ async fn handle_handshake(
     }
     drop(settings);
 
-    // Get current state vector
-    let sv_b64 = match ctx.app_state.storage.load_crdt_doc() {
-        Ok(doc) => {
+    // Get current state vector from cached CRDT doc
+    let storage_hs = Arc::clone(&ctx.app_state.storage);
+    let sv_b64 = tokio::task::spawn_blocking(move || {
+        storage_hs.with_crdt_doc(|doc| {
             let sv = doc.state_vector();
-            let encoded = sv.encode();
-            Some(BASE64.encode(encoded))
-        }
-        Err(_) => None,
-    };
-
+            Ok(BASE64.encode(sv.encode()))
+        })
+    })
+    .await
+    .ok()
+    .and_then(|r| r.ok());
     (
         StatusCode::OK,
         Json(SyncHandshakeResponse {
@@ -150,8 +151,48 @@ async fn handle_exchange(
     }
     drop(settings);
 
-    let doc = match ctx.app_state.storage.load_crdt_doc() {
-        Ok(d) => d,
+    let storage_for_sync = Arc::clone(&ctx.app_state.storage);
+    let updates_b64 = req.updates_base64;
+    let sv_b64 = req.state_vector_base64;
+
+    let exchange_res = tokio::task::spawn_blocking(move || {
+        storage_for_sync.clone().with_crdt_doc_mut(move |doc| {
+            // 1. Import updates sent by client
+            if !updates_b64.trim().is_empty()
+                && let Ok(updates_bytes) = BASE64.decode(updates_b64.trim())
+                && let Err(e) = doc.import_updates(&updates_bytes)
+            {
+                eprintln!("[Sync Server] Error importing client updates: {e}");
+            }
+
+            // 2. Sync to local disk files
+            let summary = match storage_for_sync.sync_disk_from_crdt(doc) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[Sync Server] Error syncing disk: {e}");
+                    SyncStats::default()
+                }
+            };
+
+            // 3. Compute reply updates based on client state vector
+            let mut reply_updates_b64 = String::new();
+            if !sv_b64.trim().is_empty()
+                && let Ok(sv_bytes) = BASE64.decode(sv_b64.trim())
+                && let Ok(client_vv) = loro::VersionVector::decode(&sv_bytes)
+                && let Ok(updates_for_client) = doc.export_updates_from(&client_vv)
+            {
+                reply_updates_b64 = BASE64.encode(updates_for_client);
+            }
+
+            Ok(((summary, reply_updates_b64), true))
+        })
+    })
+    .await
+    .map_err(|e| format!("Sync task failed: {e}"))
+    .and_then(|r| r);
+
+    let (summary, reply_updates_b64) = match exchange_res {
+        Ok(res) => res,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -159,41 +200,11 @@ async fn handle_exchange(
                     success: false,
                     updates_base64: String::new(),
                     summary: SyncStats::default(),
-                    error_message: Some(format!("Failed to load local CRDT doc: {e}")),
+                    error_message: Some(format!("Failed to process local CRDT doc: {e}")),
                 }),
             );
         }
     };
-
-    // 1. Import updates sent by client
-    if !req.updates_base64.trim().is_empty()
-        && let Ok(updates_bytes) = BASE64.decode(req.updates_base64.trim())
-        && let Err(e) = doc.import_updates(&updates_bytes)
-    {
-        eprintln!("[Sync Server] Error importing client updates: {e}");
-    }
-
-    // 2. Sync to local disk files
-    let summary = match ctx.app_state.storage.sync_disk_from_crdt(&doc) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("[Sync Server] Error syncing disk: {e}");
-            SyncStats::default()
-        }
-    };
-
-    // 3. Save CRDT snapshot
-    let _ = ctx.app_state.storage.save_crdt_doc(&doc);
-
-    // 4. Compute reply updates based on client state vector
-    let mut reply_updates_b64 = String::new();
-    if !req.state_vector_base64.trim().is_empty()
-        && let Ok(sv_bytes) = BASE64.decode(req.state_vector_base64.trim())
-        && let Ok(client_vv) = loro::VersionVector::decode(&sv_bytes)
-        && let Ok(updates_for_client) = doc.export_updates_from(&client_vv)
-    {
-        reply_updates_b64 = BASE64.encode(updates_for_client);
-    }
 
     // 5. Emit UI event so active chat/characters refresh
     let _ = ctx.app_handle.emit("sync-completed", &summary);

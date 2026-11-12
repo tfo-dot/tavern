@@ -72,25 +72,33 @@ pub async fn sync_with_peer(
             .unwrap_or_else(|| "Handshake rejected by remote peer".to_string()));
     }
 
-    // Step 2: Load local CRDT doc and compute updates to send
-    let doc = app_state.storage.load_crdt_doc()?;
-    let local_sv = doc.state_vector();
-    let local_sv_encoded = local_sv.encode();
-    let local_sv_b64 = BASE64.encode(local_sv_encoded);
+    // Step 2: Compute state vector & updates from cached CRDT doc
+    let target_sv_opt = handshake_data.state_vector_base64.clone();
+    let storage_step2 = Arc::clone(&app_state.storage);
+    let (local_sv_b64, outgoing_updates_b64) = tokio::task::spawn_blocking(move || {
+        storage_step2.with_crdt_doc(move |doc| {
+            let local_sv = doc.state_vector();
+            let local_sv_b64 = BASE64.encode(local_sv.encode());
 
-    let mut outgoing_updates_b64 = String::new();
-    if let Some(target_sv_str) = &handshake_data.state_vector_base64
-        && let Ok(target_sv_bytes) = BASE64.decode(target_sv_str.trim())
-        && let Ok(target_vv) = loro::VersionVector::decode(&target_sv_bytes)
-        && let Ok(updates) = doc.export_updates_from(&target_vv)
-    {
-        outgoing_updates_b64 = BASE64.encode(updates);
-    }
-    if outgoing_updates_b64.is_empty()
-        && let Ok(snapshot) = doc.export_snapshot()
-    {
-        outgoing_updates_b64 = BASE64.encode(snapshot);
-    }
+            let mut outgoing_updates_b64 = String::new();
+            if let Some(target_sv_str) = &target_sv_opt
+                && let Ok(target_sv_bytes) = BASE64.decode(target_sv_str.trim())
+                && let Ok(target_vv) = loro::VersionVector::decode(&target_sv_bytes)
+                && let Ok(updates) = doc.export_updates_from(&target_vv)
+            {
+                outgoing_updates_b64 = BASE64.encode(updates);
+            }
+            if outgoing_updates_b64.is_empty()
+                && let Ok(snapshot) = doc.export_snapshot()
+            {
+                outgoing_updates_b64 = BASE64.encode(snapshot);
+            }
+
+            Ok((local_sv_b64, outgoing_updates_b64))
+        })
+    })
+    .await
+    .map_err(|e| format!("Sync task failed: {e}"))??;
 
     // Step 3: Send exchange request
     let exchange_url = format!("{base_url}/api/sync/exchange");
@@ -126,16 +134,24 @@ pub async fn sync_with_peer(
             .unwrap_or_else(|| "Sync exchange failed on remote device".to_string()));
     }
 
-    // Step 4: Import remote updates into local CRDT doc
-    if !exchange_data.updates_base64.trim().is_empty()
-        && let Ok(remote_updates_bytes) = BASE64.decode(exchange_data.updates_base64.trim())
-    {
-        doc.import_updates(&remote_updates_bytes)?;
-    }
-
-    // Step 5: Sync to local disk and persist
-    let stats = app_state.storage.sync_disk_from_crdt(&doc)?;
-    let _ = app_state.storage.save_crdt_doc(&doc);
+    // Step 4 & 5: Import remote updates into cached CRDT doc, sync disk, and persist
+    let remote_b64 = exchange_data.updates_base64;
+    let storage_step4 = Arc::clone(&app_state.storage);
+    let stats = tokio::task::spawn_blocking(move || {
+        storage_step4.clone().with_crdt_doc_mut(move |doc| {
+            let mut mutated = false;
+            if !remote_b64.trim().is_empty()
+                && let Ok(remote_updates_bytes) = BASE64.decode(remote_b64.trim())
+            {
+                doc.import_updates(&remote_updates_bytes)?;
+                mutated = true;
+            }
+            let stats = storage_step4.sync_disk_from_crdt(doc)?;
+            Ok((stats, mutated))
+        })
+    })
+    .await
+    .map_err(|e| format!("Sync task failed: {e}"))??;
 
     // Step 6: Notify UI
     let _ = app_handle.emit("sync-completed", &stats);

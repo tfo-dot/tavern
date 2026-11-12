@@ -32,12 +32,18 @@ pub struct AppState {
 
 #[tauri::command]
 async fn get_all_characters(state: State<'_, Arc<AppState>>) -> Result<Vec<Character>, String> {
-    state.storage.list_characters()
+    let storage = Arc::clone(&state.storage);
+    tokio::task::spawn_blocking(move || storage.list_characters())
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 async fn get_character(id: String, state: State<'_, Arc<AppState>>) -> Result<Character, String> {
-    state.storage.load_character(&id)
+    let storage = Arc::clone(&state.storage);
+    tokio::task::spawn_blocking(move || storage.load_character(&id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -45,7 +51,11 @@ async fn save_character(
     character: Character,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Character, String> {
-    state.storage.save_character(&character)?;
+    let storage = Arc::clone(&state.storage);
+    let to_save = character.clone();
+    tokio::task::spawn_blocking(move || storage.save_character(&to_save))
+        .await
+        .map_err(|e| e.to_string())??;
     let mut active = state.active_character.lock().await;
     if let Some(cur) = active.as_ref()
         && cur.id == character.id
@@ -57,7 +67,11 @@ async fn save_character(
 
 #[tauri::command]
 async fn delete_character(id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.storage.delete_character(&id)?;
+    let storage = Arc::clone(&state.storage);
+    let id_for_del = id.clone();
+    tokio::task::spawn_blocking(move || storage.delete_character(&id_for_del))
+        .await
+        .map_err(|e| e.to_string())??;
     let mut active_char = state.active_character.lock().await;
     if let Some(cur) = active_char.as_ref()
         && cur.id == id
@@ -75,15 +89,28 @@ async fn delete_character(id: String, state: State<'_, Arc<AppState>>) -> Result
 
 #[tauri::command]
 async fn import_character_card(
-    file_bytes: Vec<u8>,
+    request: tauri::ipc::Request<'_>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Character, String> {
-    let (card, avatar) = parse_character_card(&file_bytes).map_err(|e| e.to_string())?;
-    let character = Character::from_card(card, avatar);
-    state.storage.save_character(&character)?;
-    Ok(character)
+    let file_bytes: Vec<u8> = match request.body() {
+        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
+        tauri::ipc::InvokeBody::Json(val) => {
+            let arr = val
+                .get("fileBytes")
+                .ok_or_else(|| "Missing fileBytes payload".to_string())?;
+            serde_json::from_value(arr.clone()).map_err(|e| e.to_string())?
+        }
+    };
+    let storage = Arc::clone(&state.storage);
+    tokio::task::spawn_blocking(move || {
+        let (card, avatar) = parse_character_card(&file_bytes).map_err(|e| e.to_string())?;
+        let character = Character::from_card(card, avatar);
+        storage.save_character(&character)?;
+        Ok(character)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
-
 #[tauri::command]
 async fn export_card_png(
     character_id: String,
@@ -240,23 +267,30 @@ async fn create_chat(
     title: Option<String>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<ChatTree, String> {
-    let character = state.storage.load_character(&character_id)?;
-    let chat_title = title.unwrap_or_else(|| format!("Chat with {}", character.card.data.name));
-    let mut tree = ChatTree::new(character_id.clone(), chat_title);
+    let storage = Arc::clone(&state.storage);
+    let char_id_clone = character_id.clone();
+    let (character, tree) = tokio::task::spawn_blocking(move || -> Result<(Character, ChatTree), String> {
+        let character = storage.load_character(&char_id_clone)?;
+        let chat_title = title.unwrap_or_else(|| format!("Chat with {}", character.card.data.name));
+        let mut tree = ChatTree::new(char_id_clone, chat_title);
 
-    let primary_greeting = first_mes.unwrap_or_else(|| character.card.data.first_mes.clone());
-    if !primary_greeting.is_empty() {
-        tree.append_message(AuthorRole::Assistant, primary_greeting, None);
-    }
-
-    // Add all alternate greetings as sibling root swipes
-    for alt in &character.card.data.alternate_greetings {
-        if !alt.trim().is_empty() {
-            tree.add_swipe(None, alt.clone());
+        let primary_greeting = first_mes.unwrap_or_else(|| character.card.data.first_mes.clone());
+        if !primary_greeting.is_empty() {
+            tree.append_message(AuthorRole::Assistant, primary_greeting, None);
         }
-    }
-    tree.active_root_index = 0;
-    state.storage.save_chat(&tree)?;
+
+        // Add all alternate greetings as sibling root swipes
+        for alt in &character.card.data.alternate_greetings {
+            if !alt.trim().is_empty() {
+                tree.add_swipe(None, alt.clone());
+            }
+        }
+        tree.active_root_index = 0;
+        storage.save_chat(&tree)?;
+        Ok((character, tree))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
     {
         let mut active_chat = state.active_chat.lock().await;
@@ -278,30 +312,49 @@ async fn create_chat(
 
 #[tauri::command]
 async fn load_chat(chat_id: String, state: State<'_, Arc<AppState>>) -> Result<ChatTree, String> {
-    let mut tree = state.storage.load_chat(&chat_id)?;
+    let storage = Arc::clone(&state.storage);
+    let (tree, loaded_group, loaded_char) = tokio::task::spawn_blocking(
+        move || -> Result<(ChatTree, Option<Group>, Option<Character>), String> {
+            let mut tree = storage.load_chat(&chat_id)?;
+            let mut loaded_group = None;
+            let mut loaded_char = None;
 
-    if let Some(gid) = &tree.group_id {
-        if let Ok(group) = state.storage.load_group(gid) {
-            let mut active_grp = state.active_group.lock().await;
-            *active_grp = Some(group);
-        }
-    } else if let Ok(character) = state.storage.load_character(&tree.character_id) {
-        // If chat tree has only 1 root message and character has alternate greetings, populate them as swipes
-        if tree.root_message_ids.len() == 1 && !character.card.data.alternate_greetings.is_empty() {
-            for alt in &character.card.data.alternate_greetings {
-                if !alt.trim().is_empty()
-                    && !tree
-                        .nodes
-                        .values()
-                        .any(|n| n.parent_id.is_none() && n.content == *alt)
-                {
-                    tree.add_swipe(None, alt.clone());
+            if let Some(gid) = &tree.group_id {
+                if let Ok(group) = storage.load_group(gid) {
+                    loaded_group = Some(group);
                 }
+            } else if let Ok(character) = storage.load_character(&tree.character_id) {
+                // If chat tree has only 1 root message and character has alternate greetings, populate them as swipes
+                if tree.root_message_ids.len() == 1
+                    && !character.card.data.alternate_greetings.is_empty()
+                {
+                    for alt in &character.card.data.alternate_greetings {
+                        if !alt.trim().is_empty()
+                            && !tree
+                                .nodes
+                                .values()
+                                .any(|n| n.parent_id.is_none() && n.content == *alt)
+                        {
+                            tree.add_swipe(None, alt.clone());
+                        }
+                    }
+                    tree.active_root_index = 0;
+                    let _ = storage.save_chat(&tree);
+                }
+                loaded_char = Some(character);
             }
-            tree.active_root_index = 0;
-            let _ = state.storage.save_chat(&tree);
-        }
 
+            Ok((tree, loaded_group, loaded_char))
+        },
+    )
+    .await
+    .map_err(|e| e.to_string())??;
+
+    if let Some(group) = loaded_group {
+        let mut active_grp = state.active_group.lock().await;
+        *active_grp = Some(group);
+    }
+    if let Some(character) = loaded_char {
         let mut active_char = state.active_character.lock().await;
         *active_char = Some(character);
     }
@@ -325,12 +378,19 @@ async fn list_chats(
     character_id: String,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<ChatSummary>, String> {
-    state.storage.list_chats_for_character(&character_id)
+    let storage = Arc::clone(&state.storage);
+    tokio::task::spawn_blocking(move || storage.list_chats_for_character(&character_id))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
 async fn delete_chat(chat_id: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
-    state.storage.delete_chat(&chat_id)?;
+    let storage = Arc::clone(&state.storage);
+    let id_for_del = chat_id.clone();
+    tokio::task::spawn_blocking(move || storage.delete_chat(&id_for_del))
+        .await
+        .map_err(|e| e.to_string())??;
     let mut active = state.active_chat.lock().await;
     if let Some(cur) = active.as_ref()
         && cur.id.to_string() == chat_id
@@ -339,7 +399,6 @@ async fn delete_chat(chat_id: String, state: State<'_, Arc<AppState>>) -> Result
     }
     Ok(())
 }
-
 #[tauri::command]
 async fn import_chat_jsonl(
     file_bytes: Vec<u8>,
