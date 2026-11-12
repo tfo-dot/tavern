@@ -87,20 +87,52 @@ async fn delete_character(id: String, state: State<'_, Arc<AppState>>) -> Result
     Ok(())
 }
 
+fn extract_import_bytes(body: &tauri::ipc::InvokeBody) -> Result<Vec<u8>, String> {
+    match body {
+        tauri::ipc::InvokeBody::Raw(bytes) => Ok(bytes.clone()),
+        tauri::ipc::InvokeBody::Json(val) => match val {
+            serde_json::Value::Array(arr) => {
+                let mut out = Vec::with_capacity(arr.len());
+                for item in arr {
+                    let b = item
+                        .as_u64()
+                        .and_then(|n| u8::try_from(n).ok())
+                        .ok_or_else(|| "Invalid byte value in payload".to_string())?;
+                    out.push(b);
+                }
+                Ok(out)
+            }
+            serde_json::Value::Object(map) => {
+                if let Some(b64) = map.get("fileBase64").and_then(|v| v.as_str()) {
+                    use base64::Engine;
+                    base64::engine::general_purpose::STANDARD
+                        .decode(b64.as_bytes())
+                        .map_err(|e| format!("Invalid base64 payload: {e}"))
+                } else if let Some(arr) = map.get("fileBytes").and_then(|v| v.as_array()) {
+                    let mut out = Vec::with_capacity(arr.len());
+                    for item in arr {
+                        let b = item
+                            .as_u64()
+                            .and_then(|n| u8::try_from(n).ok())
+                            .ok_or_else(|| "Invalid byte value in fileBytes".to_string())?;
+                        out.push(b);
+                    }
+                    Ok(out)
+                } else {
+                    Err("Missing fileBytes payload".to_string())
+                }
+            }
+            _ => Err("Unsupported import payload format".to_string()),
+        },
+    }
+}
+
 #[tauri::command]
 async fn import_character_card(
     request: tauri::ipc::Request<'_>,
     state: State<'_, Arc<AppState>>,
 ) -> Result<Character, String> {
-    let file_bytes: Vec<u8> = match request.body() {
-        tauri::ipc::InvokeBody::Raw(bytes) => bytes.clone(),
-        tauri::ipc::InvokeBody::Json(val) => {
-            let arr = val
-                .get("fileBytes")
-                .ok_or_else(|| "Missing fileBytes payload".to_string())?;
-            serde_json::from_value(arr.clone()).map_err(|e| e.to_string())?
-        }
-    };
+    let file_bytes = extract_import_bytes(request.body())?;
     let storage = Arc::clone(&state.storage);
     tokio::task::spawn_blocking(move || {
         let (card, avatar) = parse_character_card(&file_bytes).map_err(|e| e.to_string())?;
@@ -1408,4 +1440,40 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::extract_import_bytes;
+    use tauri::ipc::InvokeBody;
+
+    #[test]
+    fn test_extract_import_bytes_variants() {
+        let sample = vec![137_u8, 80, 78, 71, 13, 10, 26, 10];
+
+        assert_eq!(
+            extract_import_bytes(&InvokeBody::Raw(sample.clone())).unwrap(),
+            sample
+        );
+
+        let json_arr = serde_json::json!([137, 80, 78, 71, 13, 10, 26, 10]);
+        assert_eq!(
+            extract_import_bytes(&InvokeBody::Json(json_arr)).unwrap(),
+            sample
+        );
+
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&sample);
+        let json_b64 = serde_json::json!({ "fileBase64": b64 });
+        assert_eq!(
+            extract_import_bytes(&InvokeBody::Json(json_b64)).unwrap(),
+            sample
+        );
+
+        let json_legacy = serde_json::json!({ "fileBytes": [137, 80, 78, 71, 13, 10, 26, 10] });
+        assert_eq!(
+            extract_import_bytes(&InvokeBody::Json(json_legacy)).unwrap(),
+            sample
+        );
+    }
 }

@@ -31,9 +31,25 @@ export async function deleteCharacter(id: string): Promise<void> {
   await invoke('delete_character', { id });
 }
 
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  const CHUNK_SIZE = 0x4000;
+  const parts: string[] = [];
+  for (let i = 0; i < bytes.length; i += CHUNK_SIZE) {
+    const chunk = bytes.subarray(i, i + CHUNK_SIZE);
+    parts.push(String.fromCharCode(...chunk));
+  }
+  return btoa(parts.join(''));
+}
+
 export async function importCharacterCard(fileBytes: number[] | Uint8Array): Promise<Character> {
-  const payload = fileBytes instanceof Uint8Array ? fileBytes : new Uint8Array(fileBytes);
-  return await invoke<Character>('import_character_card', payload);
+  const bytes = fileBytes instanceof Uint8Array ? fileBytes : new Uint8Array(fileBytes);
+  const isAndroid = typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent);
+  if (isAndroid) {
+    return await invoke<Character>('import_character_card', {
+      fileBase64: uint8ArrayToBase64(bytes),
+    });
+  }
+  return await invoke<Character>('import_character_card', bytes);
 }
 
 export async function exportCardPng(characterId: string): Promise<number[]> {
